@@ -245,7 +245,7 @@ const FLAG_STYLES = {
   "Chicago": { bg: "#FAEEDA", color: "#633806", label: "🏙 Chicago" },
 };
 
-export default function RoleScorecard() {
+function RoleScorecard() {
   const [expanded, setExpanded] = useState(null);
   const [filterTier, setFilterTier] = useState("all");
 
@@ -443,3 +443,45 @@ export default function RoleScorecard() {
     </div>
   );
 }
+
+const SITE_PASSWORD = "OhNoYouKnowInspect";
+const AUTH_KEY = "role-scorecard-auth";
+
+function PasswordGate() {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem(AUTH_KEY) === "true");
+  const [input, setInput] = useState("");
+  const [error, setError] = useState(false);
+
+  if (authed) return <RoleScorecard />;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (input === SITE_PASSWORD) {
+      sessionStorage.setItem(AUTH_KEY, "true");
+      setAuthed(true);
+    } else {
+      setError(true);
+    }
+  };
+
+  return (
+    <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 320, margin: "18vh auto 0", padding: "0 1rem", textAlign: "center" }}>
+      <div style={{ fontSize: 15, fontWeight: 600, color: "#111", marginBottom: 12 }}>This page is password protected</div>
+      <form onSubmit={submit}>
+        <input
+          type="password"
+          autoFocus
+          value={input}
+          onChange={(e) => { setInput(e.target.value); setError(false); }}
+          style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${error ? "#d94f40" : "#ddd"}`, fontSize: 14, boxSizing: "border-box" }}
+        />
+        {error && <div style={{ color: "#d94f40", fontSize: 12, marginTop: 6 }}>Incorrect password</div>}
+        <button type="submit" style={{ marginTop: 12, padding: "8px 20px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          Enter
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export default PasswordGate;
