@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles } from "./storage.js";
+import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides } from "./storage.js";
 import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
+import HiringManagerModal from "./HiringManagerModal.jsx";
 
 const ROLES = [
   // TIER 1 — LA/Remote, Strong Fit, Apply Now
@@ -213,6 +214,22 @@ const TIER_META = {
 const APPLIED_STYLE = { bg: "#F0FDF4", color: "#15803D", border: "#86EFAC", label: "✓ Applied" };
 const REJECTED_STYLE = { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", label: "✗ Rejected" };
 const CLOSED_STYLE = { bg: "#F3F4F6", color: "#374151", border: "#9CA3AF", label: "✕ Closed" };
+const UNAPPLIED_STYLE = { bg: "#F5F5F5", color: "#666", border: "#ddd", label: "Un-applied" };
+
+const STATUS_TAG_META = {
+  unapplied: UNAPPLIED_STYLE,
+  applied: APPLIED_STYLE,
+  rejected: REJECTED_STYLE,
+  closed: CLOSED_STYLE,
+};
+
+function getRoleStatus(role, overrides) {
+  if (overrides[role.num]) return overrides[role.num];
+  if (role.rejected) return "rejected";
+  if (role.closed) return "closed";
+  if (role.applied) return "applied";
+  return "unapplied";
+}
 const STATUS_STYLES = {
   "applied":  { bg: "#E6F1FB", color: "#1D4ED8", border: "#93C5FD", label: "Applied" },
   "rejected": { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", label: "Rejected" },
@@ -259,6 +276,8 @@ function RoleScorecard() {
   const [customRoles, setCustomRoles] = useState(() => loadCustomRoles());
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showAddRoleModal, setShowAddRoleModal] = useState(false);
+  const [statusOverrides, setStatusOverrides] = useState(() => loadStatusOverrides());
+  const [reviewRole, setReviewRole] = useState(null);
 
   const allRoles = [...ROLES, ...customRoles];
 
@@ -266,6 +285,12 @@ function RoleScorecard() {
     setProfile(next);
     saveProfile(next);
     setShowProfileModal(false);
+  };
+
+  const setStatus = (num, status) => {
+    const next = { ...statusOverrides, [num]: status };
+    setStatusOverrides(next);
+    saveStatusOverrides(next);
   };
 
   const handleAddRole = (fields) => {
@@ -282,17 +307,17 @@ function RoleScorecard() {
   const tiers = [1,2,3,4,5];
   const sortByPriority = (roles) => [...roles].sort((a, b) => {
     // Applied/closed/rejected roles go to bottom when viewing all
-    const aInactive = (a.applied || a.rejected || a.closed) ? 1 : 0;
-    const bInactive = (b.applied || b.rejected || b.closed) ? 1 : 0;
+    const aInactive = getRoleStatus(a, statusOverrides) !== "unapplied" ? 1 : 0;
+    const bInactive = getRoleStatus(b, statusOverrides) !== "unapplied" ? 1 : 0;
     if (aInactive !== bInactive) return aInactive - bInactive;
     // Sort by tier first, then rank within tier
     if (a.tier !== b.tier) return a.tier - b.tier;
     return a.rank - b.rank;
   });
-  const baseFiltered = filterTier === "all" ? allRoles : filterTier === "applied" ? allRoles.filter(r => r.applied) : filterTier === "rejected" ? allRoles.filter(r => r.rejected) : allRoles.filter(r => r.tier === Number(filterTier));
+  const baseFiltered = filterTier === "all" ? allRoles : filterTier === "applied" ? allRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied") : filterTier === "rejected" ? allRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected") : allRoles.filter(r => r.tier === Number(filterTier));
   const filtered = sortByPriority(baseFiltered);
-  const rejectedCount = allRoles.filter(r => r.rejected).length;
-  const appliedCount = allRoles.filter(r => r.applied).length;
+  const rejectedCount = allRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected").length;
+  const appliedCount = allRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied").length;
 
   return (
     <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem" }}>
@@ -343,9 +368,9 @@ function RoleScorecard() {
 
       {/* Application Tracker Dashboard */}
       {(() => {
-        const appliedRoles = allRoles.filter(r => r.applied);
-        const rejectedRoles = appliedRoles.filter(r => r.rejected);
-        const inReviewRoles = appliedRoles.filter(r => !r.rejected);
+        const appliedRoles = allRoles.filter(r => ["applied", "rejected"].includes(getRoleStatus(r, statusOverrides)));
+        const rejectedRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected");
+        const inReviewRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied");
         return (
           <div style={{ background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "1rem 1.25rem", marginBottom: 20 }}>
             <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#888", marginBottom: 12 }}>Application Tracker</div>
@@ -380,7 +405,7 @@ function RoleScorecard() {
                     <td style={{ padding: "6px 8px", color: "var(--text-secondary)", maxWidth: 200 }}>{r.title.split(" to ")[0].replace("Chief of Staff", "CoS").replace("Director, ", "").slice(0,35)}{r.title.length > 45 ? "…" : ""}</td>
                     <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: getResumeStyle(r.resumeVersion).bg, color: getResumeStyle(r.resumeVersion).color, border: `0.5px solid ${getResumeStyle(r.resumeVersion).border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.dateApplied || "—"}</td>
-                    <td style={{ padding: "6px 8px" }}>{r.rejected ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `0.5px solid ${REJECTED_STYLE.border}`, fontWeight: 700 }}>{REJECTED_STYLE.label}</span> : <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "#E1F5EE", color: "#085041", border: "0.5px solid #5DCAA5", fontWeight: 600 }}>In Review</span>}</td>
+                    <td style={{ padding: "6px 8px" }}>{getRoleStatus(r, statusOverrides) === "rejected" ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `0.5px solid ${REJECTED_STYLE.border}`, fontWeight: 700 }}>{REJECTED_STYLE.label}</span> : <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "#E1F5EE", color: "#085041", border: "0.5px solid #5DCAA5", fontWeight: 600 }}>In Review</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -410,9 +435,25 @@ function RoleScorecard() {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{role.company}</span>
                   <span style={{ fontSize: 11, padding: "1px 7px", borderRadius: 20, background: flagStyle.bg, color: flagStyle.color, border: `0.5px solid ${flagStyle.color}33`, whiteSpace: "nowrap" }}>{flagStyle.label}</span>
-                  {role.rejected ? <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `1px solid ${REJECTED_STYLE.border}`, whiteSpace: "nowrap" }}>{REJECTED_STYLE.label}</span> : role.applied ? <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: APPLIED_STYLE.bg, color: APPLIED_STYLE.color, border: `1px solid ${APPLIED_STYLE.border}`, whiteSpace: "nowrap" }}>{APPLIED_STYLE.label}</span> : null}
+                  {(() => {
+                    const status = getRoleStatus(role, statusOverrides);
+                    const sm = STATUS_TAG_META[status];
+                    return (
+                      <select
+                        value={status}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setStatus(role.num, e.target.value)}
+                        style={{ fontSize: 11, fontWeight: 700, padding: "2px 6px", borderRadius: 20, background: sm.bg, color: sm.color, border: `1px solid ${sm.border}`, whiteSpace: "nowrap", cursor: "pointer" }}
+                      >
+                        <option value="unapplied">Un-applied</option>
+                        <option value="applied">✓ Applied</option>
+                        <option value="rejected">✗ Rejected</option>
+                        <option value="closed">✕ Closed</option>
+                      </select>
+                    );
+                  })()}
                   {role.resumeVersion && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: getResumeStyle(role.resumeVersion).bg, color: getResumeStyle(role.resumeVersion).color, border: `0.5px solid ${getResumeStyle(role.resumeVersion).border}`, whiteSpace: "nowrap" }}>{getResumeStyle(role.resumeVersion).label}</span>}
-                  {role.closed && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: CLOSED_STYLE.bg, color: CLOSED_STYLE.color, border: `1px solid ${CLOSED_STYLE.border}`, whiteSpace: "nowrap" }}>{CLOSED_STYLE.label}</span>}{role.tier === 4 && <span style={{ fontSize: 10, color: "#888", background: "#f5f5f5", padding: "1px 6px", borderRadius: 10, border: "0.5px solid #ddd" }}>Tier {role.tier}</span>}
+                  {role.tier === 4 && <span style={{ fontSize: 10, color: "#888", background: "#f5f5f5", padding: "1px 6px", borderRadius: 10, border: "0.5px solid #ddd" }}>Tier {role.tier}</span>}
                 </div>
                 <div style={{ fontSize: 12, color: "#555" }}>{role.title}</div>
                 <div style={{ fontSize: 11, color: "#999", marginTop: 1 }}>#{role.num} · {role.location} · {role.salary}</div>
@@ -458,9 +499,14 @@ function RoleScorecard() {
                 </div>
                 <div>
                   <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#888", marginBottom: 5 }}>Action</div>
-                  <a href={role.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", padding: "7px 14px", background: tm.bg, color: tm.color, border: `1px solid ${tm.border}`, borderRadius: 8, fontSize: 12, fontWeight: 600, textDecoration: "none", marginBottom: 8 }}>
-                    View posting →
-                  </a>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                    <a href={role.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", padding: "7px 14px", background: tm.bg, color: tm.color, border: `1px solid ${tm.border}`, borderRadius: 8, fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
+                      View posting →
+                    </a>
+                    <button onClick={(e) => { e.stopPropagation(); setReviewRole(role); }} style={{ padding: "7px 14px", background: "white", color: "#111", border: "1.5px solid #111", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                      Hiring Manager Review
+                    </button>
+                  </div>
                   <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5 }}>
                     {role.tier === 1 && "Apply this week. Tailor resume to this role's specific language."}
                     {role.tier === 2 && "Strong role — resolve location question before applying."}
@@ -484,6 +530,9 @@ function RoleScorecard() {
       )}
       {showAddRoleModal && (
         <AddRoleModal profile={profile} onAdd={handleAddRole} onClose={() => setShowAddRoleModal(false)} />
+      )}
+      {reviewRole && (
+        <HiringManagerModal role={reviewRole} profile={profile} onClose={() => setReviewRole(null)} />
       )}
     </div>
   );

@@ -114,6 +114,7 @@ export default function AddRoleModal({ profile, onAdd, onClose }) {
       flag: parsed.flag || "Unknown",
       resumeVersion: parsed.recommendedResume || null,
       url: url || "",
+      jobDescription,
       applied: false,
     });
   };
