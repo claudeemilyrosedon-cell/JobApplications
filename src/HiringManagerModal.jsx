@@ -47,13 +47,14 @@ Reply with a hiring-manager-style scorecard containing:
 Format as clear markdown with headers for each section.`;
 }
 
-export default function HiringManagerModal({ role, profile, onClose }) {
-  const [jobDescription, setJobDescription] = useState(role.jobDescription || "");
+export default function HiringManagerModal({ role, profile, initialJobDescription, onSaveJobDescription, onClose }) {
+  const [jobDescription, setJobDescription] = useState(initialJobDescription || "");
   const [prompt, setPrompt] = useState("");
   const [copied, setCopied] = useState(false);
 
   const generatePrompt = () => {
     setPrompt(buildPrompt(role, profile, jobDescription));
+    if (jobDescription.trim()) onSaveJobDescription?.(jobDescription);
   };
 
   const copyPrompt = async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides } from "./storage.js";
+import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides, loadJobDescriptions, saveJobDescriptions } from "./storage.js";
 import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
 import HiringManagerModal from "./HiringManagerModal.jsx";
@@ -230,6 +230,10 @@ function getRoleStatus(role, overrides) {
   if (role.applied) return "applied";
   return "unapplied";
 }
+
+function getJobDescription(role, jobDescriptions) {
+  return jobDescriptions[role.num] || role.jobDescription || "";
+}
 const STATUS_STYLES = {
   "applied":  { bg: "#E6F1FB", color: "#1D4ED8", border: "#93C5FD", label: "Applied" },
   "rejected": { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", label: "Rejected" },
@@ -277,6 +281,7 @@ function RoleScorecard() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showAddRoleModal, setShowAddRoleModal] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState(() => loadStatusOverrides());
+  const [jobDescriptions, setJobDescriptions] = useState(() => loadJobDescriptions());
   const [reviewRole, setReviewRole] = useState(null);
 
   const allRoles = [...ROLES, ...customRoles];
@@ -293,6 +298,12 @@ function RoleScorecard() {
     saveStatusOverrides(next);
   };
 
+  const setJobDescriptionForRole = (num, text) => {
+    const next = { ...jobDescriptions, [num]: text };
+    setJobDescriptions(next);
+    saveJobDescriptions(next);
+  };
+
   const handleAddRole = (fields) => {
     const nextNum = Math.max(0, ...allRoles.map(r => r.num)) + 1;
     const tierPeers = allRoles.filter(r => r.tier === fields.tier);
@@ -301,6 +312,7 @@ function RoleScorecard() {
     const next = [...customRoles, newRole];
     setCustomRoles(next);
     saveCustomRoles(next);
+    if (fields.jobDescription) setJobDescriptionForRole(nextNum, fields.jobDescription);
     setShowAddRoleModal(false);
   };
 
@@ -532,7 +544,13 @@ function RoleScorecard() {
         <AddRoleModal profile={profile} onAdd={handleAddRole} onClose={() => setShowAddRoleModal(false)} />
       )}
       {reviewRole && (
-        <HiringManagerModal role={reviewRole} profile={profile} onClose={() => setReviewRole(null)} />
+        <HiringManagerModal
+          role={reviewRole}
+          profile={profile}
+          initialJobDescription={getJobDescription(reviewRole, jobDescriptions)}
+          onSaveJobDescription={(text) => setJobDescriptionForRole(reviewRole.num, text)}
+          onClose={() => setReviewRole(null)}
+        />
       )}
     </div>
   );
