@@ -215,10 +215,12 @@ const APPLIED_STYLE = { bg: "#F0FDF4", color: "#15803D", border: "#86EFAC", labe
 const REJECTED_STYLE = { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", label: "✗ Rejected" };
 const CLOSED_STYLE = { bg: "#F3F4F6", color: "#374151", border: "#9CA3AF", label: "✕ Closed" };
 const UNAPPLIED_STYLE = { bg: "#F5F5F5", color: "#666", border: "#ddd", label: "Un-applied" };
+const INTERVIEWING_STYLE = { bg: "#FAEEDA", color: "#633806", border: "#EF9F27", label: "◐ Interviewing" };
 
 const STATUS_TAG_META = {
   unapplied: UNAPPLIED_STYLE,
   applied: APPLIED_STYLE,
+  interviewing: INTERVIEWING_STYLE,
   rejected: REJECTED_STYLE,
   closed: CLOSED_STYLE,
 };
@@ -398,7 +400,7 @@ function RoleScorecard() {
 
       {/* Application Tracker Dashboard */}
       {(() => {
-        const appliedRoles = allRoles.filter(r => ["applied", "rejected"].includes(getRoleStatus(r, statusOverrides)));
+        const appliedRoles = allRoles.filter(r => ["applied", "rejected", "interviewing"].includes(getRoleStatus(r, statusOverrides)));
         const rejectedRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected");
         const inReviewRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied");
         return (
@@ -435,7 +437,23 @@ function RoleScorecard() {
                     <td style={{ padding: "6px 8px", color: "var(--text-secondary)", maxWidth: 200 }}>{r.title.split(" to ")[0].replace("Chief of Staff", "CoS").replace("Director, ", "").slice(0,35)}{r.title.length > 45 ? "…" : ""}</td>
                     <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: getResumeStyle(r.resumeVersion).bg, color: getResumeStyle(r.resumeVersion).color, border: `0.5px solid ${getResumeStyle(r.resumeVersion).border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{getDateApplied(r, dateAppliedOverrides) || "—"}</td>
-                    <td style={{ padding: "6px 8px" }}>{getRoleStatus(r, statusOverrides) === "rejected" ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `0.5px solid ${REJECTED_STYLE.border}`, fontWeight: 700 }}>{REJECTED_STYLE.label}</span> : <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "#E1F5EE", color: "#085041", border: "0.5px solid #5DCAA5", fontWeight: 600 }}>In Review</span>}</td>
+                    <td style={{ padding: "6px 8px" }}>
+                      {(() => {
+                        const trackerStatus = getRoleStatus(r, statusOverrides);
+                        const sm = STATUS_TAG_META[trackerStatus] || APPLIED_STYLE;
+                        return (
+                          <select
+                            value={trackerStatus}
+                            onChange={(e) => setStatus(r.num, e.target.value)}
+                            style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 10, background: sm.bg, color: sm.color, border: `0.5px solid ${sm.border}`, cursor: "pointer" }}
+                          >
+                            <option value="applied">In Review</option>
+                            <option value="interviewing">Interviewing</option>
+                            <option value="rejected">Rejected</option>
+                          </select>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -477,6 +495,7 @@ function RoleScorecard() {
                       >
                         <option value="unapplied">Un-applied</option>
                         <option value="applied">✓ Applied</option>
+                        <option value="interviewing">◐ Interviewing</option>
                         <option value="rejected">✗ Rejected</option>
                         <option value="closed">✕ Closed</option>
                       </select>
