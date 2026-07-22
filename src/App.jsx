@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles } from "./storage.js";
+import ProfileModal from "./ProfileModal.jsx";
+import AddRoleModal from "./AddRoleModal.jsx";
 
 const ROLES = [
   // TIER 1 — LA/Remote, Strong Fit, Apply Now
@@ -225,6 +228,10 @@ const RESUME_VERSION_STYLES = {
   "D": { bg: "#FFF7ED", color: "#9A3412", border: "#FDBA74", label: "Version D · Startup PM" },
 };
 
+function getResumeStyle(key) {
+  return RESUME_VERSION_STYLES[key] || { bg: "#F5F5F5", color: "#555", border: "#ddd", label: key };
+}
+
 const FLAG_STYLES = {
   "LA": { bg: "#E1F5EE", color: "#085041", label: "📍 LA" },
   "Remote": { bg: "#E6F1FB", color: "#0C447C", label: "🌐 Remote" },
@@ -248,6 +255,29 @@ const FLAG_STYLES = {
 function RoleScorecard() {
   const [expanded, setExpanded] = useState(null);
   const [filterTier, setFilterTier] = useState("all");
+  const [profile, setProfile] = useState(() => loadProfile());
+  const [customRoles, setCustomRoles] = useState(() => loadCustomRoles());
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showAddRoleModal, setShowAddRoleModal] = useState(false);
+
+  const allRoles = [...ROLES, ...customRoles];
+
+  const handleSaveProfile = (next) => {
+    setProfile(next);
+    saveProfile(next);
+    setShowProfileModal(false);
+  };
+
+  const handleAddRole = (fields) => {
+    const nextNum = Math.max(0, ...allRoles.map(r => r.num)) + 1;
+    const tierPeers = allRoles.filter(r => r.tier === fields.tier);
+    const nextRank = Math.max(0, ...tierPeers.map(r => r.rank)) + 1;
+    const newRole = { ...fields, num: nextNum, rank: nextRank };
+    const next = [...customRoles, newRole];
+    setCustomRoles(next);
+    saveCustomRoles(next);
+    setShowAddRoleModal(false);
+  };
 
   const tiers = [1,2,3,4,5];
   const sortByPriority = (roles) => [...roles].sort((a, b) => {
@@ -259,8 +289,10 @@ function RoleScorecard() {
     if (a.tier !== b.tier) return a.tier - b.tier;
     return a.rank - b.rank;
   });
-  const baseFiltered = filterTier === "all" ? ROLES : filterTier === "applied" ? ROLES.filter(r => r.applied) : filterTier === "rejected" ? ROLES.filter(r => r.rejected) : ROLES.filter(r => r.tier === Number(filterTier));
+  const baseFiltered = filterTier === "all" ? allRoles : filterTier === "applied" ? allRoles.filter(r => r.applied) : filterTier === "rejected" ? allRoles.filter(r => r.rejected) : allRoles.filter(r => r.tier === Number(filterTier));
   const filtered = sortByPriority(baseFiltered);
+  const rejectedCount = allRoles.filter(r => r.rejected).length;
+  const appliedCount = allRoles.filter(r => r.applied).length;
 
   return (
     <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem" }}>
@@ -270,11 +302,17 @@ function RoleScorecard() {
         <div style={{ fontSize: 13, color: "#666" }}>Emily Rose Don · Los Angeles, CA · July 2026 · Ranked by: location fit, skills match, hire likelihood, salary, and COO path value</div>
       </div>
 
+      {/* Profile / Add Role actions */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button onClick={() => setShowProfileModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Profile</button>
+        <button onClick={() => setShowAddRoleModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>+ Add Role</button>
+      </div>
+
       {/* Tier filter */}
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-        <button onClick={() => setFilterTier("all")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "all" ? "1.5px solid #111" : "1.5px solid #ddd", background: filterTier === "all" ? "#111" : "#fafafa", color: filterTier === "all" ? "white" : "#555", fontSize: 12, cursor: "pointer", fontWeight: filterTier === "all" ? 600 : 400 }}>All {ROLES.length}</button>
-        <button onClick={() => setFilterTier("rejected")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "rejected" ? `1.5px solid ${REJECTED_STYLE.color}` : `1.5px solid ${REJECTED_STYLE.border}`, background: filterTier === "rejected" ? REJECTED_STYLE.color : REJECTED_STYLE.bg, color: filterTier === "rejected" ? "white" : REJECTED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✗ Rejected (1)</button>
-        <button onClick={() => setFilterTier("applied")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "applied" ? `1.5px solid ${APPLIED_STYLE.color}` : "1.5px solid #86EFAC", background: filterTier === "applied" ? APPLIED_STYLE.color : APPLIED_STYLE.bg, color: filterTier === "applied" ? "white" : APPLIED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✓ Applied (39)</button>
+        <button onClick={() => setFilterTier("all")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "all" ? "1.5px solid #111" : "1.5px solid #ddd", background: filterTier === "all" ? "#111" : "#fafafa", color: filterTier === "all" ? "white" : "#555", fontSize: 12, cursor: "pointer", fontWeight: filterTier === "all" ? 600 : 400 }}>All {allRoles.length}</button>
+        <button onClick={() => setFilterTier("rejected")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "rejected" ? `1.5px solid ${REJECTED_STYLE.color}` : `1.5px solid ${REJECTED_STYLE.border}`, background: filterTier === "rejected" ? REJECTED_STYLE.color : REJECTED_STYLE.bg, color: filterTier === "rejected" ? "white" : REJECTED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✗ Rejected ({rejectedCount})</button>
+        <button onClick={() => setFilterTier("applied")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "applied" ? `1.5px solid ${APPLIED_STYLE.color}` : "1.5px solid #86EFAC", background: filterTier === "applied" ? APPLIED_STYLE.color : APPLIED_STYLE.bg, color: filterTier === "applied" ? "white" : APPLIED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✓ Applied ({appliedCount})</button>
         {tiers.map(t => {
           const m = TIER_META[t];
           const active = filterTier === String(t);
@@ -291,7 +329,7 @@ function RoleScorecard() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 20 }}>
           {tiers.map(t => {
             const m = TIER_META[t];
-            const count = ROLES.filter(r => r.tier === t).length;
+            const count = allRoles.filter(r => r.tier === t).length;
             return (
               <div key={t} onClick={() => setFilterTier(String(t))} style={{ background: m.bg, border: `1px solid ${m.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
                 <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: m.color, marginBottom: 4 }}>{m.label}</div>
@@ -305,7 +343,7 @@ function RoleScorecard() {
 
       {/* Application Tracker Dashboard */}
       {(() => {
-        const appliedRoles = ROLES.filter(r => r.applied);
+        const appliedRoles = allRoles.filter(r => r.applied);
         const rejectedRoles = appliedRoles.filter(r => r.rejected);
         const inReviewRoles = appliedRoles.filter(r => !r.rejected);
         return (
@@ -340,7 +378,7 @@ function RoleScorecard() {
                   <tr key={r.num} style={{ borderBottom: "0.5px solid var(--border)" }}>
                     <td style={{ padding: "6px 8px", fontWeight: 500, color: "var(--text-primary)" }}>{r.company.split(" (")[0].split(" — ")[0]}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-secondary)", maxWidth: 200 }}>{r.title.split(" to ")[0].replace("Chief of Staff", "CoS").replace("Director, ", "").slice(0,35)}{r.title.length > 45 ? "…" : ""}</td>
-                    <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: RESUME_VERSION_STYLES[r.resumeVersion]?.bg, color: RESUME_VERSION_STYLES[r.resumeVersion]?.color, border: `0.5px solid ${RESUME_VERSION_STYLES[r.resumeVersion]?.border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
+                    <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: getResumeStyle(r.resumeVersion).bg, color: getResumeStyle(r.resumeVersion).color, border: `0.5px solid ${getResumeStyle(r.resumeVersion).border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.dateApplied || "—"}</td>
                     <td style={{ padding: "6px 8px" }}>{r.rejected ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `0.5px solid ${REJECTED_STYLE.border}`, fontWeight: 700 }}>{REJECTED_STYLE.label}</span> : <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "#E1F5EE", color: "#085041", border: "0.5px solid #5DCAA5", fontWeight: 600 }}>In Review</span>}</td>
                   </tr>
@@ -373,7 +411,7 @@ function RoleScorecard() {
                   <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{role.company}</span>
                   <span style={{ fontSize: 11, padding: "1px 7px", borderRadius: 20, background: flagStyle.bg, color: flagStyle.color, border: `0.5px solid ${flagStyle.color}33`, whiteSpace: "nowrap" }}>{flagStyle.label}</span>
                   {role.rejected ? <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `1px solid ${REJECTED_STYLE.border}`, whiteSpace: "nowrap" }}>{REJECTED_STYLE.label}</span> : role.applied ? <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: APPLIED_STYLE.bg, color: APPLIED_STYLE.color, border: `1px solid ${APPLIED_STYLE.border}`, whiteSpace: "nowrap" }}>{APPLIED_STYLE.label}</span> : null}
-                  {role.resumeVersion && RESUME_VERSION_STYLES[role.resumeVersion] && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: RESUME_VERSION_STYLES[role.resumeVersion].bg, color: RESUME_VERSION_STYLES[role.resumeVersion].color, border: `0.5px solid ${RESUME_VERSION_STYLES[role.resumeVersion].border}`, whiteSpace: "nowrap" }}>{RESUME_VERSION_STYLES[role.resumeVersion].label}</span>}
+                  {role.resumeVersion && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: getResumeStyle(role.resumeVersion).bg, color: getResumeStyle(role.resumeVersion).color, border: `0.5px solid ${getResumeStyle(role.resumeVersion).border}`, whiteSpace: "nowrap" }}>{getResumeStyle(role.resumeVersion).label}</span>}
                   {role.closed && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: CLOSED_STYLE.bg, color: CLOSED_STYLE.color, border: `1px solid ${CLOSED_STYLE.border}`, whiteSpace: "nowrap" }}>{CLOSED_STYLE.label}</span>}{role.tier === 4 && <span style={{ fontSize: 10, color: "#888", background: "#f5f5f5", padding: "1px 6px", borderRadius: 10, border: "0.5px solid #ddd" }}>Tier {role.tier}</span>}
                 </div>
                 <div style={{ fontSize: 12, color: "#555" }}>{role.title}</div>
@@ -440,6 +478,13 @@ function RoleScorecard() {
       <div style={{ marginTop: 16, fontSize: 11, color: "#999", lineHeight: 1.6, borderTop: "1px solid #eee", paddingTop: 12 }}>
         <strong style={{ color: "#555" }}>Note:</strong> 19 of 52 roles are LinkedIn-gated (require authentication) and could not be evaluated. 4 roles used JavaScript-rendering that prevented content extraction. 1 URL was too long to process. Rankings for inaccessible roles are placeholders — open them directly to evaluate. All rankings based on Emily Rose Don's profile: LA-based, 10+ years PM/GX/operations, AI practitioner, Alaska Airlines, no current direct reports.
       </div>
+
+      {showProfileModal && (
+        <ProfileModal profile={profile} onSave={handleSaveProfile} onClose={() => setShowProfileModal(false)} />
+      )}
+      {showAddRoleModal && (
+        <AddRoleModal profile={profile} onAdd={handleAddRole} onClose={() => setShowAddRoleModal(false)} />
+      )}
     </div>
   );
 }
