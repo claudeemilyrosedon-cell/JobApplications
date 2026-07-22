@@ -2,6 +2,7 @@ const PROFILE_KEY = "role-scorecard-profile";
 const CUSTOM_ROLES_KEY = "role-scorecard-custom-roles";
 const STATUS_OVERRIDES_KEY = "role-scorecard-status-overrides";
 const JOB_DESCRIPTIONS_KEY = "role-scorecard-job-descriptions";
+const DATE_APPLIED_OVERRIDES_KEY = "role-scorecard-date-applied";
 
 const EMPTY_PROFILE = { context: "", resumes: [] };
 
@@ -78,5 +79,24 @@ export function saveJobDescriptions(jobDescriptions) {
     localStorage.setItem(JOB_DESCRIPTIONS_KEY, JSON.stringify(jobDescriptions));
   } catch (err) {
     console.error("Failed to save job descriptions", err);
+  }
+}
+
+export function loadDateAppliedOverrides() {
+  try {
+    const raw = localStorage.getItem(DATE_APPLIED_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveDateAppliedOverrides(overrides) {
+  try {
+    localStorage.setItem(DATE_APPLIED_OVERRIDES_KEY, JSON.stringify(overrides));
+  } catch (err) {
+    console.error("Failed to save date applied overrides", err);
   }
 }

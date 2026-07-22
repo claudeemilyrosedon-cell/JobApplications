@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides, loadJobDescriptions, saveJobDescriptions } from "./storage.js";
+import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides, loadJobDescriptions, saveJobDescriptions, loadDateAppliedOverrides, saveDateAppliedOverrides } from "./storage.js";
 import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
 import HiringManagerModal from "./HiringManagerModal.jsx";
@@ -234,6 +234,14 @@ function getRoleStatus(role, overrides) {
 function getJobDescription(role, jobDescriptions) {
   return jobDescriptions[role.num] || role.jobDescription || "";
 }
+
+function getDateApplied(role, dateAppliedOverrides) {
+  return dateAppliedOverrides[role.num] || role.dateApplied || null;
+}
+
+function formatToday() {
+  return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 const STATUS_STYLES = {
   "applied":  { bg: "#E6F1FB", color: "#1D4ED8", border: "#93C5FD", label: "Applied" },
   "rejected": { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", label: "Rejected" },
@@ -282,6 +290,7 @@ function RoleScorecard() {
   const [showAddRoleModal, setShowAddRoleModal] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState(() => loadStatusOverrides());
   const [jobDescriptions, setJobDescriptions] = useState(() => loadJobDescriptions());
+  const [dateAppliedOverrides, setDateAppliedOverrides] = useState(() => loadDateAppliedOverrides());
   const [reviewRole, setReviewRole] = useState(null);
 
   const allRoles = [...ROLES, ...customRoles];
@@ -296,6 +305,15 @@ function RoleScorecard() {
     const next = { ...statusOverrides, [num]: status };
     setStatusOverrides(next);
     saveStatusOverrides(next);
+
+    if (status === "applied") {
+      const role = allRoles.find(r => r.num === num);
+      if (role && !getDateApplied(role, dateAppliedOverrides)) {
+        const nextDates = { ...dateAppliedOverrides, [num]: formatToday() };
+        setDateAppliedOverrides(nextDates);
+        saveDateAppliedOverrides(nextDates);
+      }
+    }
   };
 
   const setJobDescriptionForRole = (num, text) => {
@@ -411,12 +429,12 @@ function RoleScorecard() {
                 </tr>
               </thead>
               <tbody>
-                {appliedRoles.sort((a,b) => (a.dateApplied||"").localeCompare(b.dateApplied||"")).map(r => (
+                {appliedRoles.sort((a,b) => (getDateApplied(a, dateAppliedOverrides)||"").localeCompare(getDateApplied(b, dateAppliedOverrides)||"")).map(r => (
                   <tr key={r.num} style={{ borderBottom: "0.5px solid var(--border)" }}>
                     <td style={{ padding: "6px 8px", fontWeight: 500, color: "var(--text-primary)" }}>{r.company.split(" (")[0].split(" — ")[0]}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-secondary)", maxWidth: 200 }}>{r.title.split(" to ")[0].replace("Chief of Staff", "CoS").replace("Director, ", "").slice(0,35)}{r.title.length > 45 ? "…" : ""}</td>
                     <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: getResumeStyle(r.resumeVersion).bg, color: getResumeStyle(r.resumeVersion).color, border: `0.5px solid ${getResumeStyle(r.resumeVersion).border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
-                    <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.dateApplied || "—"}</td>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{getDateApplied(r, dateAppliedOverrides) || "—"}</td>
                     <td style={{ padding: "6px 8px" }}>{getRoleStatus(r, statusOverrides) === "rejected" ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: REJECTED_STYLE.bg, color: REJECTED_STYLE.color, border: `0.5px solid ${REJECTED_STYLE.border}`, fontWeight: 700 }}>{REJECTED_STYLE.label}</span> : <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "#E1F5EE", color: "#085041", border: "0.5px solid #5DCAA5", fontWeight: 600 }}>In Review</span>}</td>
                   </tr>
                 ))}
