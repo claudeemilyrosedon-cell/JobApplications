@@ -44,50 +44,46 @@ export default function TopFivePanel({ roles, getStatus, onSetStatus, onOpenRole
       {picks.length === 0 ? (
         <div style={{ fontSize: 13, color: "#666", padding: "10px 0" }}>No un-applied Tier 1–3 roles left. Add new postings to refill the list.</div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
-          <thead>
-            <tr style={{ borderBottom: "0.5px solid #ddd" }}>
-              {["#", "Role", "Why today", "Score", "Resume", "First action", "Status"].map((h) => (
-                <th key={h} style={{ textAlign: "left", padding: "5px 6px", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 600 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {picks.map((p, i) => (
-              <tr key={p.role.num} style={{ borderBottom: "0.5px solid #eee", cursor: "pointer" }} onClick={() => onOpenRole(p.role.num)}>
-                <td style={{ padding: "7px 6px", fontWeight: 700 }}>{i + 1}</td>
-                <td style={{ padding: "7px 6px" }}>
+        <div style={{ marginTop: 8 }}>
+          {picks.map((p, i) => (
+            <div
+              key={p.role.num}
+              onClick={() => onOpenRole(p.role.num)}
+              style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 14px", padding: "10px 4px", borderBottom: "0.5px solid #eee", cursor: "pointer", fontSize: 12 }}
+            >
+              <div style={{ display: "flex", gap: 10, flex: "1 1 260px", minWidth: 0 }}>
+                <div style={{ fontWeight: 700, width: 14, flexShrink: 0 }}>{i + 1}</div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 600, color: "#111" }}>{p.role.company}</div>
                   <div style={{ color: "#666", fontSize: 11 }}>{p.role.title}</div>
-                </td>
-                <td style={{ padding: "7px 6px", color: "#555", fontSize: 11 }}>
-                  {[...p.reasons, whyLine(p.role)].filter(Boolean).join(" · ")}
-                </td>
-                <td style={{ padding: "7px 6px", fontWeight: 700, whiteSpace: "nowrap" }}>
+                  <div style={{ color: "#888", fontSize: 11, marginTop: 2 }}>
+                    {[...p.reasons, whyLine(p.role)].filter(Boolean).join(" · ")}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 12px", marginLeft: 24 }} onClick={(e) => e.stopPropagation()}>
+                <span title="Today score (base priority)" style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
                   {p.score}{p.score !== p.base && <span style={{ fontWeight: 400, color: "#999", fontSize: 10 }}> ({p.base})</span>}
-                </td>
-                <td style={{ padding: "7px 6px" }}>Ver. {p.role.resumeVersion}</td>
-                <td style={{ padding: "7px 6px", fontSize: 11 }}>
-                  <a href={p.role.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "#1D4ED8" }}>{firstAction(p.role)} →</a>
-                </td>
-                <td style={{ padding: "7px 6px" }} onClick={(e) => e.stopPropagation()}>
-                  <select
-                    value={getStatus(p.role)}
-                    onChange={(e) => {
-                      const status = e.target.value;
-                      onSetStatus(p.role.num, status);
-                      if (status !== "unapplied") setLastChange({ num: p.role.num, company: p.role.company, status });
-                    }}
-                    title="Change status — applied or closed roles are replaced with the next best role"
-                    style={{ fontSize: 11, padding: "3px 4px", borderRadius: 8, border: "1px solid #ddd", background: "#fafafa", cursor: "pointer" }}
-                  >
-                    {STATUS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-                  </select>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </span>
+                <span style={{ whiteSpace: "nowrap", color: "#555" }}>Ver. {p.role.resumeVersion}</span>
+                <a href={p.role.url} target="_blank" rel="noopener noreferrer" style={{ color: "#1D4ED8", fontSize: 11 }}>{firstAction(p.role)} →</a>
+                <select
+                  value={getStatus(p.role)}
+                  onChange={(e) => {
+                    const status = e.target.value;
+                    onSetStatus(p.role.num, status);
+                    if (status !== "unapplied") setLastChange({ num: p.role.num, company: p.role.company, status });
+                  }}
+                  aria-label={`Status for ${p.role.company}`}
+                  title="Change status — applied or closed roles are replaced with the next best role"
+                  style={{ fontSize: 11, fontWeight: 600, padding: "3px 6px", borderRadius: 8, border: "1px solid #bbb", background: "white", cursor: "pointer" }}
+                >
+                  {STATUS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                </select>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {lastChange && (
