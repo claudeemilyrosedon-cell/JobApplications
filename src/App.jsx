@@ -564,7 +564,7 @@ function RoleScorecard() {
 
       {/* Today's Top 5 */}
       {filterTier === "all" && (
-        <TopFivePanel roles={allRoles} getStatus={(r) => getRoleStatus(r, statusOverrides)} onOpenRole={openRole} />
+        <TopFivePanel roles={allRoles} getStatus={(r) => getRoleStatus(r, statusOverrides)} onSetStatus={setStatus} onOpenRole={openRole} />
       )}
 
       {/* Application Tracker Dashboard */}

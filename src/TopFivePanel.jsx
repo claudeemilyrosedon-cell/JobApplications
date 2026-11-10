@@ -1,4 +1,12 @@
 import { useState } from "react";
+
+const STATUS_OPTIONS = [
+  ["unapplied", "To apply"],
+  ["applied", "✓ Applied"],
+  ["interviewing", "◐ Interviewing"],
+  ["rejected", "✗ Rejected"],
+  ["closed", "✕ Closed"],
+];
 import { topFive, whyLine, firstAction } from "./scoring.js";
 
 function buildApplyPrompt(picks) {
@@ -8,7 +16,8 @@ function buildApplyPrompt(picks) {
   return `Today's top 5 applications from my tracker. For each, confirm the posting is still open, then generate a tailored resume and cover letter (use the tailored-resume-for-role skill). Batch them by resume version.\n\n${list}`;
 }
 
-export default function TopFivePanel({ roles, getStatus, onOpenRole }) {
+export default function TopFivePanel({ roles, getStatus, onSetStatus, onOpenRole }) {
+  const [lastChange, setLastChange] = useState(null);
   const [copied, setCopied] = useState(false);
   const { picks, alsoConsider, poolSize } = topFive(roles, getStatus);
 
@@ -37,7 +46,7 @@ export default function TopFivePanel({ roles, getStatus, onOpenRole }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
           <thead>
             <tr style={{ borderBottom: "0.5px solid #ddd" }}>
-              {["#", "Role", "Why today", "Score", "Resume", "First action"].map((h) => (
+              {["#", "Role", "Why today", "Score", "Resume", "First action", "Status"].map((h) => (
                 <th key={h} style={{ textAlign: "left", padding: "5px 6px", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 600 }}>{h}</th>
               ))}
             </tr>
@@ -60,10 +69,34 @@ export default function TopFivePanel({ roles, getStatus, onOpenRole }) {
                 <td style={{ padding: "7px 6px", fontSize: 11 }}>
                   <a href={p.role.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: "#1D4ED8" }}>{firstAction(p.role)} →</a>
                 </td>
+                <td style={{ padding: "7px 6px" }} onClick={(e) => e.stopPropagation()}>
+                  <select
+                    value={getStatus(p.role)}
+                    onChange={(e) => {
+                      const status = e.target.value;
+                      onSetStatus(p.role.num, status);
+                      if (status !== "unapplied") setLastChange({ num: p.role.num, company: p.role.company, status });
+                    }}
+                    title="Change status — applied or closed roles are replaced with the next best role"
+                    style={{ fontSize: 11, padding: "3px 4px", borderRadius: 8, border: "1px solid #ddd", background: "#fafafa", cursor: "pointer" }}
+                  >
+                    {STATUS_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                  </select>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {lastChange && (
+        <div style={{ fontSize: 11, color: "#555", marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+          <span>{lastChange.company} marked {STATUS_OPTIONS.find(([v]) => v === lastChange.status)?.[1].replace(/^[^A-Za-z]+/, "")} — replaced with the next best role.</span>
+          <button
+            onClick={() => { onSetStatus(lastChange.num, "unapplied"); setLastChange(null); }}
+            style={{ border: "none", background: "none", color: "#1D4ED8", cursor: "pointer", fontSize: 11, padding: 0 }}
+          >Undo</button>
+        </div>
       )}
 
       {alsoConsider.length > 0 && (
