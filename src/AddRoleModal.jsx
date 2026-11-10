@@ -19,40 +19,13 @@ const secondaryButtonStyle = { ...buttonStyle, background: "white", color: "#111
 const hintStyle = { fontSize: 12, color: "#777", lineHeight: 1.5, marginBottom: 10 };
 
 const REQUIRED_FIELDS = ["company", "title", "location", "salary", "fit", "hire", "tier", "cos_path", "note"];
-const URL_RE = /^https?:\/\/\S+$/i;
+const URL_RE = /https?:\/\/[^\s,]+/gi;
+const emptyRow = () => ({ url: "", jobDescription: "" });
 
 const RESUME_VERSIONS = `A = Consumer/DTC (Green Street DTC brand wins) — consumer, ecomm, CPG, retail
 B = AI-Native Operator (AI agent deployment + adoption playbooks) — AI-first companies, AI transformation roles
 C = Enterprise Ops + AI (cross-functional execution at Alaska Airlines scale) — enterprise, healthcare tech, matrixed orgs
 D = Startup PM (spec writing, OKRs, 0→1) — roles that prefer a PM background`;
-
-// Split the paste box into jobs. Two formats:
-//  • a list of links, one per line
-//  • blocks separated by a line of --- , each with a link on the first line and the JD below
-export function parseJobs(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const hasSeparators = /^\s*-{3,}\s*$/m.test(trimmed);
-  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  if (!hasSeparators && lines.every((l) => URL_RE.test(l))) {
-    return lines.map((url) => ({ url, jobDescription: "" }));
-  }
-
-  const blocks = hasSeparators ? trimmed.split(/^\s*-{3,}\s*$/m) : [trimmed];
-  return blocks
-    .map((b) => b.trim())
-    .filter(Boolean)
-    .map((b) => {
-      const blockLines = b.split("\n");
-      const first = blockLines[0].trim();
-      if (URL_RE.test(first)) {
-        return { url: first, jobDescription: blockLines.slice(1).join("\n").trim() };
-      }
-      const found = b.match(/https?:\/\/\S+/);
-      return { url: found ? found[0] : "", jobDescription: b };
-    });
-}
 
 function buildPrompt(profile, jobs, existingRoles) {
   const resumeSection = profile.resumes.length
@@ -162,7 +135,7 @@ function toRole(parsed, fallbackJob) {
 
 export default function AddRoleModal({ profile, existingRoles, onAdd, onClose }) {
   const [step, setStep] = useState(1);
-  const [input, setInput] = useState("");
+  const [rows, setRows] = useState(() => [emptyRow()]);
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [preview, setPreview] = useState([]);
@@ -175,13 +148,40 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
     return map;
   }, [existingRoles]);
 
-  const jobs = useMemo(() => parseJobs(input), [input]);
+  const jobs = rows
+    .map((r) => ({ url: r.url.trim(), jobDescription: r.jobDescription.trim() }))
+    .filter((r) => r.url || r.jobDescription);
+
+  const updateRow = (i, field, value) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+  const addRow = () => setRows((rs) => [...rs, emptyRow()]);
+  const removeRow = (i) => setRows((rs) => (rs.length === 1 ? [emptyRow()] : rs.filter((_, j) => j !== i)));
+
+  // Pasting several links into one link field splits them into separate roles.
+  const handleLinkPaste = (i, e) => {
+    const text = e.clipboardData.getData("text");
+    const urls = text.match(URL_RE) || [];
+    if (urls.length < 2) return;
+    e.preventDefault();
+    setRows((rs) => {
+      const next = [...rs];
+      next[i] = { ...next[i], url: urls[0] };
+      const extra = urls.slice(1).map((url) => ({ url, jobDescription: "" }));
+      next.splice(i + 1, 0, ...extra);
+      return next;
+    });
+  };
+
+  const rowStatus = (r) => {
+    const url = r.url.trim();
+    if (url && existingByUrl.has(normalizeUrl(url))) return { dup: existingByUrl.get(normalizeUrl(url)) };
+    return {};
+  };
   const alreadyTracked = jobs.filter((j) => j.url && existingByUrl.has(normalizeUrl(j.url)));
   const newJobs = jobs.filter((j) => !(j.url && existingByUrl.has(normalizeUrl(j.url))));
 
   const generatePrompt = () => {
     if (!newJobs.length) {
-      setError(jobs.length ? "Every link is already in the tracker." : "Paste at least one link or job description.");
+      setError(jobs.length ? "Every link is already in the tracker." : "Add at least one link or job description.");
       return;
     }
     setError("");
@@ -245,7 +245,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
           <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 16, fontSize: 11, color: "#999" }}>
-          {["Paste jobs", "Score with Claude", "Review & add"].map((s, i) => (
+          {["Enter roles", "Score with Claude", "Review & add"].map((s, i) => (
             <span key={s} style={{ fontWeight: step === i + 1 ? 700 : 400, color: step === i + 1 ? "#111" : "#999" }}>
               {i + 1}. {s}{i < 2 ? "  →" : ""}
             </span>
@@ -254,26 +254,51 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
 
         {step === 1 && (
           <>
-            <label style={labelStyle}>Job links and descriptions</label>
             <div style={hintStyle}>
-              Paste as many as you like. Either <strong>one link per line</strong>, or separate jobs with a line containing <code>---</code> and put the link on the first line with the job description under it (best for LinkedIn and other postings Claude can't open).
+              Add each role's link and, if you have it, the job description. Paste the description for LinkedIn and other postings Claude can't open. Pasting several links into one link box splits them into separate roles.
             </div>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={"https://jobs.ashbyhq.com/company-a/...\nhttps://job-boards.greenhouse.io/company-b/...\n---\nhttps://www.linkedin.com/jobs/view/...\nChief of Staff to the CEO\nAbout the role: ..."}
-              rows={12}
-              style={{ ...inputStyle, resize: "vertical", marginBottom: 8, fontFamily: "ui-monospace, monospace", fontSize: 12 }}
-            />
+
+            <div style={{ maxHeight: "58vh", overflowY: "auto", marginBottom: 10, paddingRight: 4 }}>
+              {rows.map((r, i) => {
+                const { dup } = rowStatus(r);
+                return (
+                  <div key={i} style={{ border: `1px solid ${dup ? "#FCD34D" : "#e8e8e8"}`, background: dup ? "#FFFBEB" : "#fcfcfc", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#111" }}>Role {i + 1}</span>
+                      <button onClick={() => removeRow(i)} title="Remove this role" style={{ border: "none", background: "none", fontSize: 12, color: "#999", cursor: "pointer" }}>Remove</button>
+                    </div>
+                    <label style={labelStyle}>Application link</label>
+                    <input
+                      value={r.url}
+                      onChange={(e) => updateRow(i, "url", e.target.value)}
+                      onPaste={(e) => handleLinkPaste(i, e)}
+                      placeholder="https://..."
+                      style={{ ...inputStyle, marginBottom: 8 }}
+                    />
+                    {dup && (
+                      <div style={{ fontSize: 11, color: "#b45309", marginBottom: 8 }}>
+                        Already in tracker as #{dup.num} {dup.company} — this role will be skipped.
+                      </div>
+                    )}
+                    <label style={labelStyle}>Job description <span style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>(optional if Claude can open the link)</span></label>
+                    <textarea
+                      value={r.jobDescription}
+                      onChange={(e) => updateRow(i, "jobDescription", e.target.value)}
+                      placeholder="Paste the full job description here..."
+                      rows={5}
+                      style={{ ...inputStyle, resize: "vertical" }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+
+            <button onClick={addRow} style={{ ...secondaryButtonStyle, width: "100%", borderStyle: "dashed", marginBottom: 12 }}>+ Add another role</button>
 
             {jobs.length > 0 && (
               <div style={{ fontSize: 12, color: "#555", marginBottom: 8 }}>
-                <strong>{newJobs.length}</strong> new job{newJobs.length === 1 ? "" : "s"} detected
-                {alreadyTracked.length > 0 && (
-                  <span style={{ color: "#b45309" }}>
-                    {" "}· {alreadyTracked.length} already in tracker (skipped): {alreadyTracked.map((j) => existingByUrl.get(normalizeUrl(j.url)).company).join(", ")}
-                  </span>
-                )}
+                <strong>{newJobs.length}</strong> role{newJobs.length === 1 ? "" : "s"} ready to score
+                {alreadyTracked.length > 0 && <span style={{ color: "#b45309" }}> · {alreadyTracked.length} already in tracker (skipped)</span>}
               </div>
             )}
 
