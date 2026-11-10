@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { computePriority, normalizeUrl } from "./scoring.js";
-import { runPrompt, parseJsonReply, loadApiSettings, saveApiSettings, MODELS } from "./claudeApi.js";
-import { inArtifact, getSample } from "./runtime.js";
+import { getSample } from "./runtime.js";
+import { REQUIRED_FIELDS, buildPrompt, toRole } from "./prompt.js";
 
 const SAMPLE_ERRORS = {
   not_granted: "Claude wasn't allowed for this page — allow it when asked, then retry.",
@@ -14,6 +14,7 @@ const SAMPLE_ERRORS = {
 };
 
 const CONCURRENCY = 3;
+export const GITHUB_REPO = "https://github.com/claudeemilyrosedon-cell/JobApplications";
 const STATUS_LABEL = {
   queued: { text: "Queued", color: "#999" },
   running: { text: "Scoring…", color: "#1D4ED8" },
@@ -39,85 +40,9 @@ const buttonStyle = { padding: "8px 16px", borderRadius: 8, border: "1.5px solid
 const secondaryButtonStyle = { ...buttonStyle, background: "white", color: "#111" };
 const hintStyle = { fontSize: 12, color: "#777", lineHeight: 1.5, marginBottom: 10 };
 
-const REQUIRED_FIELDS = ["company", "title", "location", "salary", "fit", "hire", "tier", "cos_path", "note"];
 const URL_RE = /https?:\/\/[^\s,]+/gi;
 const emptyRow = () => ({ url: "", jobDescription: "" });
 
-const RESUME_VERSIONS = `A = Consumer/DTC (Green Street DTC brand wins) — consumer, ecomm, CPG, retail
-B = AI-Native Operator (AI agent deployment + adoption playbooks) — AI-first companies, AI transformation roles
-C = Enterprise Ops + AI (cross-functional execution at Alaska Airlines scale) — enterprise, healthcare tech, matrixed orgs
-D = Startup PM (spec writing, OKRs, 0→1) — roles that prefer a PM background`;
-
-function buildPrompt(profile, jobs, existingRoles) {
-  const resumeSection = profile.resumes.length
-    ? profile.resumes.map((r, i) => `Resume ${i + 1} — "${r.name || `Resume ${i + 1}`}":\n${r.content}`).join("\n\n")
-    : "(No resume text saved in profile — use the version definitions below.)";
-
-  const existing = existingRoles
-    .map((r) => `#${r.num} | ${r.company} | ${r.title} | ${r.url || ""}`)
-    .join("\n");
-
-  const jobsSection = jobs
-    .map((j, i) => `JOB ${i + 1}\nURL: ${j.url || "(none)"}\n${j.jobDescription ? `JOB DESCRIPTION:\n${j.jobDescription}` : "JOB DESCRIPTION: (not pasted — open the URL and read the posting)"}`)
-    .join("\n\n=====\n\n");
-
-  return `You are a career advisor with HR and hiring-manager experience, scoring ${jobs.length} job posting${jobs.length === 1 ? "" : "s"} for a personal job-search tracker. Be candid — say "do not apply" when warranted.
-
-CANDIDATE CONTEXT:
-${profile.context || "(No context saved in profile.) Emily Rose Don — Los Angeles. 10+ yrs product management / CX / operations (Alaska Airlines PM; Green Street Digital DTC & B2B; AI agent shipped to production; daily Claude Code, Vercel, Lovable, GitHub). Target: Chief of Staff / Founder's Office roles, base floor $180K, long-term tech/AI company COO path toward $500K. LA or fully remote. Values work-life balance. Gaps: no direct reports, no consulting/IB/PE/MBA, no financial modeling/M&A/fundraising, never held a CoS title, no engineering degree."}
-
-RESUME VERSIONS (recommend one letter):
-${RESUME_VERSIONS}
-
-CANDIDATE RESUME TEXT:
-${resumeSection}
-
-SCREENS — check every posting:
-- Hard disqualifier (a REQUIRED credential she lacks: N yrs people management, engineering degree, HR/EA experience, "absolute must" domain, pass/fail domain signal, 0–5 yrs experience band) → tier 4, flag "No", disqualified true, resumeVersion "".
-- Title in disguise: EA work (calendar, travel, expenses, errands) or HR/People ops with a CoS title → low fit.
-- Comp vs $180K base floor → compClass: "floor_meets" (low end ≥ $180K), "ceiling_meets" (only top end ≥ $180K), "unlisted", "below".
-- Location → locationClass: "la_remote" (LA, LA-adjacent, or fully remote), "remote_plus" (remote with travel or tough time zone), "relocation", "unknown".
-- Reporting line → pathClass: "ceo_coo" (CEO, COO, founder, or dual), "cpo_cto", "other" (CBO/CRO/CDO/GM/CVP/Deputy), "wrong_direction" (credential leads away from a tech/AI COO: consumer brand, media, philanthropy, PE professional services, legacy enterprise, hardware/space/semis).
-- Background filters: consulting/IB/PE/MBA required vs preferred; "PM background preferred" is a strong positive; prior CoS title preferred is a gap.
-- Work-life signals: 24/7, Sundays, weekends, 50% travel → mention in note.
-- Positive signals: Claude / Claude Code named, AI agent deployment or adoption mandate, CEO+COO dual reporting, travel / DTC / consumer-health domain match.
-- Anonymous company → add "company name and investors" to openQuestions. Gated posting you cannot read → tier 5, flag "LinkedIn" or "Inaccessible", fill what you can.
-- Duplicates: if a job matches an EXISTING ROLE below (same company + role, or same URL), set duplicateOf to that #number.
-
-TIERS: 1 Apply Now (LA/remote, strong fit, salary on target, COO path clear) · 2 Apply — review location · 3 Apply — minor gaps · 4 Research first / do not apply · 5 Details unavailable.
-FLAGS: LA, Remote, Remote+, NYC, SF, Bay Area, Chicago, Miami/NYC, Palo Alto, Non-LA hybrid, Reach, No, Unknown, Inaccessible, LinkedIn.
-
-EXISTING ROLES (for duplicate checks):
-${existing}
-
-JOBS TO SCORE:
-${jobsSection}
-
-Reply with ONLY a JSON array (no markdown fences, no commentary) — one object per job, in the same order, each with exactly these fields:
-{
-  "url": "the job's URL",
-  "company": "string",
-  "title": "string",
-  "location": "string incl. in-office days",
-  "remote": true | false | null,
-  "salary": "as stated, or 'Unlisted'",
-  "fit": 1-10 (skills + domain match to her documented work, not company quality),
-  "hire": "Very High | High | Medium-High | Medium | Medium-Low | Low-Medium | Low | Very Low",
-  "tier": 1-5,
-  "cos_path": "estimated years to COO from this seat, e.g. '4–6 yrs', or a short phrase like 'Wrong type for tech COO'",
-  "flag": "one of the FLAGS",
-  "resumeVersion": "A | B | C | D, or '' if she should not apply",
-  "compClass": "floor_meets | ceiling_meets | unlisted | below",
-  "locationClass": "la_remote | remote_plus | relocation | unknown",
-  "pathClass": "ceo_coo | cpo_cto | other | wrong_direction",
-  "disqualified": true | false,
-  "deadline": "YYYY-MM-DD or null",
-  "postedDate": "YYYY-MM-DD or null",
-  "openQuestions": ["short things to confirm before applying, e.g. 'comp', 'remote from LA'"],
-  "duplicateOf": existing #number or null,
-  "note": "3–5 dense sentences: company context, how requirements map to her specific wins (name them), honest gaps, comp/location/COO-path verdict, what to confirm, and why this resume version"
-}`;
-}
 
 function extractJson(text) {
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
@@ -125,36 +50,7 @@ function extractJson(text) {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-function toRole(parsed, fallbackJob) {
-  const url = parsed.url || fallbackJob?.url || "";
-  return {
-    company: parsed.company,
-    title: parsed.title,
-    location: parsed.location,
-    remote: typeof parsed.remote === "boolean" ? parsed.remote : null,
-    salary: parsed.salary,
-    fit: parsed.fit === null || parsed.fit === undefined ? null : Number(parsed.fit),
-    hire: parsed.hire,
-    tier: Number(parsed.tier),
-    cos_path: parsed.cos_path,
-    note: parsed.note,
-    flag: parsed.flag || "Unknown",
-    resumeVersion: parsed.resumeVersion || parsed.recommendedResume || null,
-    compClass: parsed.compClass || undefined,
-    locationClass: parsed.locationClass || undefined,
-    pathClass: parsed.pathClass || undefined,
-    disqualified: parsed.disqualified === true,
-    deadline: parsed.deadline || null,
-    postedDate: parsed.postedDate || null,
-    openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.filter(Boolean) : [],
-    duplicateOf: parsed.duplicateOf ?? null,
-    url,
-    jobDescription: fallbackJob?.jobDescription || "",
-    applied: false,
-  };
-}
-
-export default function AddRoleModal({ profile, existingRoles, onAdd, onClose }) {
+export default function AddRoleModal({ profile, existingRoles, onAdd, onGithubSubmitted, onClose }) {
   const [step, setStep] = useState(1);
   const [rows, setRows] = useState(() => [emptyRow()]);
   const [prompt, setPrompt] = useState("");
@@ -162,21 +58,20 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
   const [preview, setPreview] = useState([]);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [settings, setSettings] = useState(() => loadApiSettings());
-  const [keyDraft, setKeyDraft] = useState("");
-  const [showSettings, setShowSettings] = useState(() => !loadApiSettings().apiKey);
+  const [submitted, setSubmitted] = useState(null);
   const [runs, setRuns] = useState([]);
   const existingRef = useRef(existingRoles);
   existingRef.current = existingRoles;
-  const hasKey = Boolean(settings.apiKey);
   const [sample, setSample] = useState(null);
   useEffect(() => {
     let live = true;
     getSample().then((fn) => { if (live) setSample(() => fn); });
     return () => { live = false; };
   }, []);
-  // "account": runs on the viewer's Claude account inside claude.ai (no key needed).
-  const mode = sample ? "account" : hasKey ? "api" : "manual";
+  // "account": inside claude.ai, scores on the viewer's Claude account right here.
+  // "github":  on GitHub Pages, files an issue; Claude Code scores it on GitHub
+  //            using the owner's Claude plan (no key in the site).
+  const mode = sample ? "account" : "github";
 
   const existingByUrl = useMemo(() => {
     const map = new Map();
@@ -215,9 +110,24 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
   const alreadyTracked = jobs.filter((j) => j.url && existingByUrl.has(normalizeUrl(j.url)));
   const newJobs = jobs.filter((j) => !(j.url && existingByUrl.has(normalizeUrl(j.url))));
 
-  const saveSettings = (next) => {
-    setSettings(next);
-    saveApiSettings(next);
+  // GitHub flow: open a pre-filled issue; the score-roles workflow does the rest.
+  const submitToGithub = () => {
+    if (!newJobs.length) {
+      setError(jobs.length ? "Every link is already in the tracker." : "Add at least one link or job description.");
+      return;
+    }
+    setError("");
+    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const title = `Score roles: ${newJobs.length} role${newJobs.length === 1 ? "" : "s"} (${date})`;
+    const body = `Scoring request from the Job Applications tracker. Submit this issue as-is — Claude scores the roles on GitHub and the tracker updates in a few minutes.\n\n\`\`\`json\n${JSON.stringify(newJobs, null, 1)}\n\`\`\`\n`;
+    const base = `${GITHUB_REPO}/issues/new?title=${encodeURIComponent(title)}`;
+    const full = `${base}&body=${encodeURIComponent(body)}`;
+    const fits = full.length <= 7500;
+    window.open(fits ? full : base, "_blank", "noopener");
+    if (!fits) navigator.clipboard?.writeText(body).catch(() => {});
+    setSubmitted({ count: newJobs.length, pasteNeeded: !fits, body });
+    onGithubSubmitted?.(newJobs.length);
+    setStep(5);
   };
 
   const updateRun = (i, patch) => setRuns((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -236,14 +146,9 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
       try {
         const prompt = buildPrompt(profile, [job], existingRef.current);
         let item;
-        if (mode === "account") {
-          const value = await sample.json(prompt, { modelTier: "default" });
-          item = Array.isArray(value) ? value[0] : value;
-          if (!item || typeof item !== "object") throw new Error("Claude's reply wasn't a role.");
-        } else {
-          const text = await runPrompt({ apiKey: settings.apiKey, model: settings.model, prompt, allowFetch: Boolean(job.url) });
-          [item] = parseJsonReply(text);
-        }
+        const value = await sample.json(prompt, { modelTier: "default" });
+        item = Array.isArray(value) ? value[0] : value;
+        if (!item || typeof item !== "object") throw new Error("Claude's reply wasn't a role.");
         const missing = REQUIRED_FIELDS.filter((f) => item[f] === undefined || item[f] === null || item[f] === "");
         if (missing.length) throw new Error(`Claude left out: ${missing.join(", ")}`);
         const role = toRole(item, job);
@@ -363,9 +268,9 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
           <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 16, fontSize: 11, color: "#999" }}>
-          {(step === 4 ? ["Enter roles", "Score & save"] : ["Enter roles", "Score with Claude", "Review & add"]).map((s, i) => (
-            <span key={s} style={{ fontWeight: (step === 4 ? i === 1 : step === i + 1) ? 700 : 400, color: (step === 4 ? i === 1 : step === i + 1) ? "#111" : "#999" }}>
-              {i + 1}. {s}{i < (step === 4 ? 1 : 2) ? "  →" : ""}
+          {(step >= 4 ? ["Enter roles", "Score & save"] : ["Enter roles", "Score with Claude", "Review & add"]).map((s, i) => (
+            <span key={s} style={{ fontWeight: (step >= 4 ? i === 1 : step === i + 1) ? 700 : 400, color: (step >= 4 ? i === 1 : step === i + 1) ? "#111" : "#999" }}>
+              {i + 1}. {s}{i < (step >= 4 ? 1 : 2) ? "  →" : ""}
             </span>
           ))}
         </div>
@@ -400,7 +305,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
                         Already in tracker as #{dup.num} {dup.company} — this role will be skipped.
                       </div>
                     )}
-                    <label style={labelStyle}>Job description <span style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>{mode === "account" ? "(required)" : "(optional if Claude can open the link)"}</span></label>
+                    <label style={labelStyle}>Job description <span style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>{mode === "account" ? "(required)" : "(optional — Claude opens the link; paste it for LinkedIn)"}</span></label>
                     <textarea
                       value={r.jobDescription}
                       onChange={(e) => updateRow(i, "jobDescription", e.target.value)}
@@ -424,63 +329,18 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
 
             {error && <div style={{ color: "#d94f40", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-            {/* Claude API settings (GitHub Pages version only) */}
-            {mode === "account" ? (
-              <div style={{ fontSize: 12, color: "#555", border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#F0FDF4" }}>
-                Scoring runs on your Claude account — no API key needed. The first time, Claude asks you to allow this page.
-              </div>
-            ) : inArtifact ? null : (
-            <div style={{ border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#fafafa" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "#555" }}>
-                  {hasKey ? <>Claude API connected · <strong>{(MODELS.find((m) => m.id === settings.model) || { label: settings.model }).label}</strong></> : "Connect your Claude API key to score and save roles automatically."}
-                </span>
-                <button onClick={() => setShowSettings((v) => !v)} style={{ border: "none", background: "none", fontSize: 12, color: "#1D4ED8", cursor: "pointer", whiteSpace: "nowrap" }}>
-                  {showSettings ? "Hide" : hasKey ? "Settings" : "Connect"}
-                </button>
-              </div>
-              {showSettings && (
-                <div style={{ marginTop: 10 }}>
-                  <label style={labelStyle}>Anthropic API key</label>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    <input
-                      type="password"
-                      value={keyDraft}
-                      onChange={(e) => setKeyDraft(e.target.value)}
-                      placeholder={hasKey ? "•••••••• saved — paste a new key to replace" : "sk-ant-..."}
-                      style={{ ...inputStyle, flex: 1 }}
-                      autoComplete="off"
-                    />
-                    <button
-                      onClick={() => { if (keyDraft.trim()) { saveSettings({ ...settings, apiKey: keyDraft.trim() }); setKeyDraft(""); setShowSettings(false); } }}
-                      style={buttonStyle}
-                    >Save</button>
-                  </div>
-                  <label style={labelStyle}>Model</label>
-                  <select value={settings.model} onChange={(e) => saveSettings({ ...settings, model: e.target.value })} style={{ ...inputStyle, marginBottom: 8 }}>
-                    {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-                  </select>
-                  <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5 }}>
-                    Get a key at console.anthropic.com. It's stored only in this browser and sent only to Anthropic. API usage is billed to your Console account (separate from a Claude.ai plan) — roughly a few cents per role.
-                    {hasKey && (
-                      <> <button onClick={() => saveSettings({ ...settings, apiKey: "" })} style={{ border: "none", background: "none", color: "#d94f40", cursor: "pointer", fontSize: 11, padding: 0 }}>Remove key</button></>
-                    )}
-                  </div>
-                </div>
-              )}
+            <div style={{ fontSize: 12, color: "#555", border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#F0FDF4", lineHeight: 1.5 }}>
+              {mode === "account"
+                ? "Scoring runs on your Claude account — no API key needed. The first time, Claude asks you to allow this page."
+                : "Scoring runs on GitHub using your Claude plan — no key needed here. You'll confirm a pre-filled GitHub issue, and the roles appear in a few minutes."}
             </div>
-            )}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
               <button onClick={onClose} style={secondaryButtonStyle}>Cancel</button>
-              {mode !== "manual" ? (
-                <>
-                  <button onClick={generatePrompt} style={secondaryButtonStyle}>Copy prompt instead</button>
-                  <button onClick={startScoring} style={buttonStyle}>Score &amp; save {newJobs.length} role{newJobs.length === 1 ? "" : "s"}</button>
-                </>
-              ) : (
-                <button onClick={generatePrompt} style={buttonStyle}>Generate Claude prompt ({newJobs.length})</button>
-              )}
+              <button onClick={generatePrompt} style={secondaryButtonStyle}>Copy prompt instead</button>
+              <button onClick={mode === "account" ? startScoring : submitToGithub} style={buttonStyle}>
+                Score &amp; save {newJobs.length} role{newJobs.length === 1 ? "" : "s"}
+              </button>
             </div>
           </>
         )}
@@ -557,6 +417,34 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
             </>
           );
         })()}
+
+        {step === 5 && submitted && (
+          <>
+            <div style={{ fontSize: 13, color: "#333", lineHeight: 1.6, marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>A GitHub issue opened in a new tab.</div>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                {submitted.pasteNeeded && (
+                  <li>The role details were too long for the link, so they're <strong>copied to your clipboard</strong> — click in the issue's description box and paste (⌘V / Ctrl+V).</li>
+                )}
+                <li>Click <strong>Submit new issue</strong>.</li>
+                <li>Claude scores the {submitted.count} role{submitted.count === 1 ? "" : "s"} on GitHub (usually 2–5 minutes), comments a summary on the issue and closes it.</li>
+                <li>This page checks for the new roles and refreshes Today's Top 5 when they land — you can close this window.</li>
+              </ol>
+            </div>
+            {submitted.pasteNeeded && (
+              <button
+                onClick={() => navigator.clipboard?.writeText(submitted.body).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {})}
+                style={{ ...secondaryButtonStyle, marginBottom: 12 }}
+              >{copied ? "Copied!" : "Copy role details again"}</button>
+            )}
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>
+              Popup blocked? <a href={`${GITHUB_REPO}/issues/new`} target="_blank" rel="noopener noreferrer">Open a new issue</a>, title it "Score roles", and paste the role details.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={buttonStyle}>Done</button>
+            </div>
+          </>
+        )}
 
         {step === 3 && (
           <>
