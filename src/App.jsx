@@ -326,27 +326,36 @@ function RoleScorecard() {
     saveJobDescriptions(next);
   };
 
-  // Adds one or many scored roles in a single save. Existing roles are never modified.
-  const handleAddRoles = (newFields) => {
-    let nextNum = Math.max(0, ...allRoles.map(r => r.num));
-    const working = [...allRoles];
-    const added = [];
-    const nextJobDescriptions = { ...jobDescriptions };
-    for (const fields of newFields) {
-      nextNum += 1;
-      const tierPeers = working.filter(r => r.tier === fields.tier);
-      const nextRank = Math.max(0, ...tierPeers.map(r => r.rank)) + 1;
-      const newRole = { ...fields, num: nextNum, rank: nextRank };
-      working.push(newRole);
-      added.push(newRole);
-      if (fields.jobDescription) nextJobDescriptions[nextNum] = fields.jobDescription;
-    }
-    const next = [...customRoles, ...added];
-    setCustomRoles(next);
-    saveCustomRoles(next);
-    setJobDescriptions(nextJobDescriptions);
-    saveJobDescriptions(nextJobDescriptions);
-    setShowAddRoleModal(false);
+  // Adds one or many scored roles. Uses functional updates so several saves in
+  // quick succession (automatic scoring) never overwrite each other.
+  // Existing roles are never modified.
+  const handleAddRoles = (newFields, { keepOpen = false } = {}) => {
+    setCustomRoles(prevCustom => {
+      const working = [...ROLES, ...prevCustom];
+      let nextNum = Math.max(0, ...working.map(r => r.num));
+      const added = [];
+      for (const fields of newFields) {
+        nextNum += 1;
+        const tierPeers = working.filter(r => r.tier === fields.tier);
+        const nextRank = Math.max(0, ...tierPeers.map(r => r.rank)) + 1;
+        const newRole = { ...fields, num: nextNum, rank: nextRank };
+        working.push(newRole);
+        added.push(newRole);
+      }
+      const next = [...prevCustom, ...added];
+      saveCustomRoles(next);
+      const withJd = added.filter(r => r.jobDescription);
+      if (withJd.length) {
+        setJobDescriptions(prevJd => {
+          const nextJd = { ...prevJd };
+          withJd.forEach(r => { nextJd[r.num] = r.jobDescription; });
+          saveJobDescriptions(nextJd);
+          return nextJd;
+        });
+      }
+      return next;
+    });
+    if (!keepOpen) setShowAddRoleModal(false);
   };
 
   const openRole = (num) => {

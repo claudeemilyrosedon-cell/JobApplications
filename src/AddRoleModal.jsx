@@ -1,5 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { computePriority, normalizeUrl } from "./scoring.js";
+import { runPrompt, parseJsonReply, loadApiSettings, saveApiSettings, MODELS } from "./claudeApi.js";
+
+const CONCURRENCY = 3;
+const STATUS_LABEL = {
+  queued: { text: "Queued", color: "#999" },
+  running: { text: "Scoring…", color: "#1D4ED8" },
+  saved: { text: "Saved", color: "#15803D" },
+  skipped: { text: "Skipped", color: "#b45309" },
+  error: { text: "Failed", color: "#d94f40" },
+};
 
 const overlayStyle = {
   position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
@@ -141,6 +151,13 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
   const [preview, setPreview] = useState([]);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [settings, setSettings] = useState(() => loadApiSettings());
+  const [keyDraft, setKeyDraft] = useState("");
+  const [showSettings, setShowSettings] = useState(() => !loadApiSettings().apiKey);
+  const [runs, setRuns] = useState([]);
+  const existingRef = useRef(existingRoles);
+  existingRef.current = existingRoles;
+  const hasKey = Boolean(settings.apiKey);
 
   const existingByUrl = useMemo(() => {
     const map = new Map();
@@ -178,6 +195,77 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
   };
   const alreadyTracked = jobs.filter((j) => j.url && existingByUrl.has(normalizeUrl(j.url)));
   const newJobs = jobs.filter((j) => !(j.url && existingByUrl.has(normalizeUrl(j.url))));
+
+  const saveSettings = (next) => {
+    setSettings(next);
+    saveApiSettings(next);
+  };
+
+  const updateRun = (i, patch) => setRuns((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  // Scores each role with Claude, then saves it straight to the tracker.
+  const scoreAndSave = async (jobList) => {
+    const initial = jobList.map((job) => ({ job, status: "queued", message: "", role: null }));
+    setRuns(initial);
+    setStep(4);
+    const seen = new Set();
+    let next = 0;
+
+    const scoreOne = async (i) => {
+      const job = jobList[i];
+      updateRun(i, { status: "running", message: "" });
+      try {
+        const text = await runPrompt({
+          apiKey: settings.apiKey,
+          model: settings.model,
+          prompt: buildPrompt(profile, [job], existingRef.current),
+          allowFetch: Boolean(job.url),
+        });
+        const [item] = parseJsonReply(text);
+        const missing = REQUIRED_FIELDS.filter((f) => item[f] === undefined || item[f] === null || item[f] === "");
+        if (missing.length) throw new Error(`Claude left out: ${missing.join(", ")}`);
+        const role = toRole(item, job);
+
+        const current = existingRef.current;
+        const dup =
+          (role.duplicateOf && current.find((r) => r.num === Number(role.duplicateOf))) ||
+          (role.url && current.find((r) => r.url && normalizeUrl(r.url) === normalizeUrl(role.url)));
+        const key = `${String(role.company).toLowerCase()}|${String(role.title).toLowerCase()}`;
+        if (dup || seen.has(key)) {
+          updateRun(i, { status: "skipped", role, message: dup ? `Already tracked as #${dup.num} ${dup.company}` : "Duplicate of another role in this batch" });
+          return;
+        }
+        seen.add(key);
+        const saved = { ...role, priority: computePriority(role), dateAdded: new Date().toISOString().slice(0, 10) };
+        onAdd([saved], { keepOpen: true });
+        updateRun(i, { status: "saved", role: saved });
+      } catch (err) {
+        updateRun(i, { status: "error", message: err.message || String(err) });
+      }
+    };
+
+    const worker = async () => {
+      while (next < jobList.length) {
+        const i = next++;
+        await scoreOne(i);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobList.length) }, worker));
+  };
+
+  const startScoring = () => {
+    if (!newJobs.length) {
+      setError(jobs.length ? "Every link is already in the tracker." : "Add at least one link or job description.");
+      return;
+    }
+    setError("");
+    scoreAndSave(newJobs);
+  };
+
+  const retryFailed = () => {
+    const failed = runs.filter((r) => r.status === "error").map((r) => r.job);
+    if (failed.length) scoreAndSave(failed);
+  };
 
   const generatePrompt = () => {
     if (!newJobs.length) {
@@ -245,9 +333,9 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
           <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: "#999" }}>×</button>
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 16, fontSize: 11, color: "#999" }}>
-          {["Enter roles", "Score with Claude", "Review & add"].map((s, i) => (
-            <span key={s} style={{ fontWeight: step === i + 1 ? 700 : 400, color: step === i + 1 ? "#111" : "#999" }}>
-              {i + 1}. {s}{i < 2 ? "  →" : ""}
+          {(step === 4 ? ["Enter roles", "Score & save"] : ["Enter roles", "Score with Claude", "Review & add"]).map((s, i) => (
+            <span key={s} style={{ fontWeight: (step === 4 ? i === 1 : step === i + 1) ? 700 : 400, color: (step === 4 ? i === 1 : step === i + 1) ? "#111" : "#999" }}>
+              {i + 1}. {s}{i < (step === 4 ? 1 : 2) ? "  →" : ""}
             </span>
           ))}
         </div>
@@ -304,9 +392,57 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
 
             {error && <div style={{ color: "#d94f40", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            {/* Claude API settings */}
+            <div style={{ border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#fafafa" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "#555" }}>
+                  {hasKey ? <>Claude API connected · <strong>{(MODELS.find((m) => m.id === settings.model) || { label: settings.model }).label}</strong></> : "Connect your Claude API key to score and save roles automatically."}
+                </span>
+                <button onClick={() => setShowSettings((v) => !v)} style={{ border: "none", background: "none", fontSize: 12, color: "#1D4ED8", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  {showSettings ? "Hide" : hasKey ? "Settings" : "Connect"}
+                </button>
+              </div>
+              {showSettings && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={labelStyle}>Anthropic API key</label>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <input
+                      type="password"
+                      value={keyDraft}
+                      onChange={(e) => setKeyDraft(e.target.value)}
+                      placeholder={hasKey ? "•••••••• saved — paste a new key to replace" : "sk-ant-..."}
+                      style={{ ...inputStyle, flex: 1 }}
+                      autoComplete="off"
+                    />
+                    <button
+                      onClick={() => { if (keyDraft.trim()) { saveSettings({ ...settings, apiKey: keyDraft.trim() }); setKeyDraft(""); setShowSettings(false); } }}
+                      style={buttonStyle}
+                    >Save</button>
+                  </div>
+                  <label style={labelStyle}>Model</label>
+                  <select value={settings.model} onChange={(e) => saveSettings({ ...settings, model: e.target.value })} style={{ ...inputStyle, marginBottom: 8 }}>
+                    {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                  <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5 }}>
+                    Get a key at console.anthropic.com. It's stored only in this browser and sent only to Anthropic. API usage is billed to your Console account (separate from a Claude.ai plan) — roughly a few cents per role.
+                    {hasKey && (
+                      <> <button onClick={() => saveSettings({ ...settings, apiKey: "" })} style={{ border: "none", background: "none", color: "#d94f40", cursor: "pointer", fontSize: 11, padding: 0 }}>Remove key</button></>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
               <button onClick={onClose} style={secondaryButtonStyle}>Cancel</button>
-              <button onClick={generatePrompt} style={buttonStyle}>Generate Claude prompt ({newJobs.length})</button>
+              {hasKey ? (
+                <>
+                  <button onClick={generatePrompt} style={secondaryButtonStyle}>Copy prompt instead</button>
+                  <button onClick={startScoring} style={buttonStyle}>Score &amp; save {newJobs.length} role{newJobs.length === 1 ? "" : "s"}</button>
+                </>
+              ) : (
+                <button onClick={generatePrompt} style={buttonStyle}>Generate Claude prompt ({newJobs.length})</button>
+              )}
             </div>
           </>
         )}
@@ -342,6 +478,47 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
             </div>
           </>
         )}
+
+        {step === 4 && (() => {
+          const done = runs.every((r) => ["saved", "skipped", "error"].includes(r.status));
+          const savedCount = runs.filter((r) => r.status === "saved").length;
+          const failedCount = runs.filter((r) => r.status === "error").length;
+          return (
+            <>
+              <div style={hintStyle}>
+                {done
+                  ? `Done — ${savedCount} role${savedCount === 1 ? "" : "s"} saved${failedCount ? `, ${failedCount} failed` : ""}. Today's Top 5 has been refreshed.`
+                  : `Claude is reading and scoring each posting (${CONCURRENCY} at a time). Each role is saved as soon as it's scored.`}
+              </div>
+              <div style={{ maxHeight: "55vh", overflowY: "auto", border: "1px solid #eee", borderRadius: 8, marginBottom: 12 }}>
+                {runs.map((r, i) => {
+                  const st = STATUS_LABEL[r.status];
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 10px", borderBottom: "1px solid #f2f2f2" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: st.color, minWidth: 64 }}>{st.text}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#111" }}>
+                          {r.role ? `${r.role.company} — ${r.role.title}` : (r.job.url || r.job.jobDescription.slice(0, 80))}
+                        </div>
+                        {r.role && r.status === "saved" && (
+                          <div style={{ fontSize: 11, color: "#666" }}>
+                            Tier {r.role.tier} · Fit {r.role.fit ?? "—"} · Priority {r.role.priority} · Ver. {r.role.resumeVersion || "—"}
+                            {r.role.disqualified ? " · Do not apply" : ""}
+                          </div>
+                        )}
+                        {r.message && <div style={{ fontSize: 11, color: st.color }}>{r.message}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                {done && failedCount > 0 && <button onClick={retryFailed} style={secondaryButtonStyle}>Retry {failedCount} failed</button>}
+                <button onClick={onClose} style={buttonStyle} disabled={!done}>{done ? "Done" : "Working…"}</button>
+              </div>
+            </>
+          );
+        })()}
 
         {step === 3 && (
           <>
