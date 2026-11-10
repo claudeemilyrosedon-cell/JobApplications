@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusOverrides, saveStatusOverrides, loadJobDescriptions, saveJobDescriptions, loadDateAppliedOverrides, saveDateAppliedOverrides } from "./storage.js";
 import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
 import HiringManagerModal from "./HiringManagerModal.jsx";
 import TopFivePanel from "./TopFivePanel.jsx";
-import { computePriority } from "./scoring.js";
+import { computePriority, normalizeUrl } from "./scoring.js";
+import { inArtifact, loadRemote } from "./runtime.js";
 
 const ROLES = [
   // TIER 1 — LA/Remote, Strong Fit, Apply Now
@@ -298,6 +299,29 @@ function RoleScorecard() {
   const [reviewRole, setReviewRole] = useState(null);
 
   const allRoles = [...ROLES, ...customRoles];
+  const [remoteStatus, setRemoteStatus] = useState(inArtifact ? "loading" : "off");
+  const [notice, setNotice] = useState("");
+  const importInputRef = useRef(null);
+
+  // In the Claude artifact, load the tracker from durable storage once.
+  useEffect(() => {
+    if (!inArtifact) return;
+    let cancelled = false;
+    loadRemote()
+      .then((state) => {
+        if (cancelled) return;
+        if (!state) { setRemoteStatus("unavailable"); return; }
+        if (state.profile) setProfile(state.profile);
+        setCustomRoles(state.customRoles);
+        setStatusOverrides(state.statusOverrides);
+        setDateAppliedOverrides(state.dateAppliedOverrides);
+        setJobDescriptions(state.jobDescriptions);
+        setRemoteStatus("ready");
+      })
+      .catch(() => { if (!cancelled) setRemoteStatus("unavailable"); });
+    return () => { cancelled = true; };
+  }, []);
+  const storageBlocked = inArtifact && remoteStatus === "loading";
 
   const handleSaveProfile = (next) => {
     setProfile(next);
@@ -364,21 +388,104 @@ function RoleScorecard() {
     setTimeout(() => document.getElementById(`role-${num}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   };
 
-  // Download every role with its current status, date applied and saved job description.
-  const exportTracker = () => {
-    const data = allRoles.map(r => ({
+  // Full backup: every role with its current state, plus the raw saved data so
+  // it can be restored losslessly here or in the Claude artifact version.
+  const buildBackup = () => ({
+    format: "role-scorecard-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    raw: { profile, customRoles, statusOverrides, jobDescriptions, dateAppliedOverrides },
+    roles: allRoles.map(r => ({
       ...r,
       status: getRoleStatus(r, statusOverrides),
       dateApplied: getDateApplied(r, dateAppliedOverrides),
       priority: computePriority(r),
       jobDescription: getJobDescription(r, jobDescriptions) || undefined,
-    }));
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    })),
+  });
+
+  const exportTracker = async () => {
+    const json = JSON.stringify(buildBackup(), null, 2);
+    if (inArtifact) {
+      try {
+        await navigator.clipboard.writeText(json);
+        setNotice("Backup copied to your clipboard.");
+      } catch {
+        setNotice("Couldn't copy the backup in this view.");
+      }
+      return;
+    }
+    const blob = new Blob([json], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `role_tracker_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `role_tracker_backup_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
+  };
+
+  // Restores a backup (or the older roles-only export) by merging it in.
+  // Nothing already in the tracker is deleted.
+  const importBackup = (data) => {
+    const builtInNums = new Set(ROLES.map(r => r.num));
+    let raw;
+    if (data && data.format === "role-scorecard-backup" && data.raw) {
+      raw = data.raw;
+    } else if (Array.isArray(data)) {
+      raw = { customRoles: [], statusOverrides: {}, jobDescriptions: {}, dateAppliedOverrides: {} };
+      for (const r of data) {
+        const base = ROLES.find(b => b.num === r.num);
+        if (!base) {
+          // eslint-disable-next-line no-unused-vars
+          const { status, priority, ...role } = r;
+          raw.customRoles.push(role);
+        }
+        const defaultStatus = getRoleStatus(base || { ...r, status: undefined, applied: false }, {});
+        if (r.status && r.status !== defaultStatus) raw.statusOverrides[r.num] = r.status;
+        if (r.dateApplied && r.dateApplied !== (base?.dateApplied || null)) raw.dateAppliedOverrides[r.num] = r.dateApplied;
+        if (r.jobDescription) raw.jobDescriptions[r.num] = r.jobDescription;
+      }
+    } else {
+      setNotice("That file isn't a tracker backup.");
+      return;
+    }
+
+    const existingUrls = new Set(allRoles.map(r => normalizeUrl(r.url)).filter(Boolean));
+    const usedNums = new Set(allRoles.map(r => r.num));
+    let maxNum = Math.max(0, ...allRoles.map(r => r.num), ...(raw.customRoles || []).map(r => r.num || 0));
+    const numMap = {};
+    const addedRoles = [];
+    for (const r of raw.customRoles || []) {
+      if (r.url && existingUrls.has(normalizeUrl(r.url))) continue;
+      let num = r.num;
+      if (!num || usedNums.has(num) || builtInNums.has(num)) num = ++maxNum;
+      numMap[r.num] = num;
+      usedNums.add(num);
+      addedRoles.push({ ...r, num });
+    }
+    const mapNum = (k) => (numMap[k] !== undefined ? numMap[k] : Number(k));
+    const remap = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([k]) => usedNums.has(mapNum(k))).map(([k, v]) => [mapNum(k), v]));
+
+    const nextCustom = [...customRoles, ...addedRoles];
+    const nextOverrides = { ...statusOverrides, ...remap(raw.statusOverrides) };
+    const nextDates = { ...dateAppliedOverrides, ...remap(raw.dateAppliedOverrides) };
+    const nextJds = { ...jobDescriptions, ...remap(raw.jobDescriptions) };
+    setCustomRoles(nextCustom); saveCustomRoles(nextCustom);
+    setStatusOverrides(nextOverrides); saveStatusOverrides(nextOverrides);
+    setDateAppliedOverrides(nextDates); saveDateAppliedOverrides(nextDates);
+    setJobDescriptions(nextJds); saveJobDescriptions(nextJds);
+    if (raw.profile && !profile.context && !profile.resumes.length) { setProfile(raw.profile); saveProfile(raw.profile); }
+    setNotice(`Imported ${addedRoles.length} added role${addedRoles.length === 1 ? "" : "s"} and ${Object.keys(remap(raw.statusOverrides)).length} status update${Object.keys(remap(raw.statusOverrides)).length === 1 ? "" : "s"}.`);
+  };
+
+  const onImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      importBackup(JSON.parse(await file.text()));
+    } catch {
+      setNotice("Couldn't read that file — choose the backup .json from Export.");
+    }
   };
 
   const tiers = [1,2,3,4,5];
@@ -407,9 +514,20 @@ function RoleScorecard() {
       {/* Profile / Add Role actions */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button onClick={() => setShowProfileModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Profile</button>
-        <button onClick={() => setShowAddRoleModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>+ Add Roles</button>
-        <button onClick={exportTracker} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Export tracker</button>
+        <button onClick={() => setShowAddRoleModal(true)} disabled={storageBlocked} style={{ opacity: storageBlocked ? 0.5 : 1,  padding: "6px 14px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>+ Add Roles</button>
+        <button onClick={exportTracker} disabled={storageBlocked} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>{inArtifact ? "Copy backup" : "Export backup"}</button>
+        <button onClick={() => importInputRef.current?.click()} disabled={storageBlocked} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Import backup</button>
+        <input ref={importInputRef} type="file" accept="application/json,.json" onChange={onImportFile} style={{ display: "none" }} />
       </div>
+
+      {(storageBlocked || remoteStatus === "unavailable" || notice) && (
+        <div style={{ fontSize: 12, padding: "8px 12px", borderRadius: 8, marginBottom: 12, background: remoteStatus === "unavailable" ? "#FEF2F2" : "#F5F5F5", color: remoteStatus === "unavailable" ? "#991B1B" : "#555", display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <span>
+            {storageBlocked ? "Loading your saved tracker…" : remoteStatus === "unavailable" ? "Couldn't reach saved data — changes this visit may not be kept. Reload to try again." : notice}
+          </span>
+          {notice && !storageBlocked && <button onClick={() => setNotice("")} style={{ border: "none", background: "none", cursor: "pointer", color: "#999" }}>×</button>}
+        </div>
+      )}
 
       {/* Tier filter */}
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
@@ -651,16 +769,19 @@ const SITE_PASSWORD = "OhNoYouKnowInspect";
 const AUTH_KEY = "role-scorecard-auth";
 
 function PasswordGate() {
-  const [authed, setAuthed] = useState(() => sessionStorage.getItem(AUTH_KEY) === "true");
+  const [authed, setAuthed] = useState(() => {
+    try { return sessionStorage.getItem(AUTH_KEY) === "true"; } catch { return false; }
+  });
   const [input, setInput] = useState("");
   const [error, setError] = useState(false);
 
-  if (authed) return <RoleScorecard />;
+  // The Claude artifact is private to its owner, so it needs no password.
+  if (inArtifact || authed) return <RoleScorecard />;
 
   const submit = (e) => {
     e.preventDefault();
     if (input === SITE_PASSWORD) {
-      sessionStorage.setItem(AUTH_KEY, "true");
+      try { sessionStorage.setItem(AUTH_KEY, "true"); } catch { /* ignore */ }
       setAuthed(true);
     } else {
       setError(true);

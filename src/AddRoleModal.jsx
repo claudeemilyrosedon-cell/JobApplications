@@ -1,6 +1,17 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { computePriority, normalizeUrl } from "./scoring.js";
 import { runPrompt, parseJsonReply, loadApiSettings, saveApiSettings, MODELS } from "./claudeApi.js";
+import { inArtifact, getSample } from "./runtime.js";
+
+const SAMPLE_ERRORS = {
+  not_granted: "Claude wasn't allowed for this page — allow it when asked, then retry.",
+  rate_limited: "You've hit a Claude usage limit — wait a bit, then retry.",
+  sampling_disabled: "Claude isn't available on this account.",
+  refused: "Claude declined this posting.",
+  invalid_json: "Claude's reply wasn't valid — retry.",
+  prompt_too_large: "This job description is too long — trim it and retry.",
+  session_expired: "Sign in to Claude again, then retry.",
+};
 
 const CONCURRENCY = 3;
 const STATUS_LABEL = {
@@ -158,6 +169,14 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
   const existingRef = useRef(existingRoles);
   existingRef.current = existingRoles;
   const hasKey = Boolean(settings.apiKey);
+  const [sample, setSample] = useState(null);
+  useEffect(() => {
+    let live = true;
+    getSample().then((fn) => { if (live) setSample(() => fn); });
+    return () => { live = false; };
+  }, []);
+  // "account": runs on the viewer's Claude account inside claude.ai (no key needed).
+  const mode = sample ? "account" : hasKey ? "api" : "manual";
 
   const existingByUrl = useMemo(() => {
     const map = new Map();
@@ -215,13 +234,16 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
       const job = jobList[i];
       updateRun(i, { status: "running", message: "" });
       try {
-        const text = await runPrompt({
-          apiKey: settings.apiKey,
-          model: settings.model,
-          prompt: buildPrompt(profile, [job], existingRef.current),
-          allowFetch: Boolean(job.url),
-        });
-        const [item] = parseJsonReply(text);
+        const prompt = buildPrompt(profile, [job], existingRef.current);
+        let item;
+        if (mode === "account") {
+          const value = await sample.json(prompt, { modelTier: "default" });
+          item = Array.isArray(value) ? value[0] : value;
+          if (!item || typeof item !== "object") throw new Error("Claude's reply wasn't a role.");
+        } else {
+          const text = await runPrompt({ apiKey: settings.apiKey, model: settings.model, prompt, allowFetch: Boolean(job.url) });
+          [item] = parseJsonReply(text);
+        }
         const missing = REQUIRED_FIELDS.filter((f) => item[f] === undefined || item[f] === null || item[f] === "");
         if (missing.length) throw new Error(`Claude left out: ${missing.join(", ")}`);
         const role = toRole(item, job);
@@ -240,7 +262,8 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
         onAdd([saved], { keepOpen: true });
         updateRun(i, { status: "saved", role: saved });
       } catch (err) {
-        updateRun(i, { status: "error", message: err.message || String(err) });
+        const message = (err && err.code && (SAMPLE_ERRORS[err.code] || err.message)) || err?.message || String(err);
+        updateRun(i, { status: "error", message });
       }
     };
 
@@ -257,6 +280,13 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
     if (!newJobs.length) {
       setError(jobs.length ? "Every link is already in the tracker." : "Add at least one link or job description.");
       return;
+    }
+    if (mode === "account") {
+      const missing = newJobs.map((j, i) => (!j.jobDescription ? i + 1 : null)).filter(Boolean);
+      if (missing.length) {
+        setError(`Paste the job description for role${missing.length === 1 ? "" : "s"} ${missing.join(", ")} — Claude can't open links from inside this page.`);
+        return;
+      }
     }
     setError("");
     scoreAndSave(newJobs);
@@ -343,7 +373,9 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
         {step === 1 && (
           <>
             <div style={hintStyle}>
-              Add each role's link and, if you have it, the job description. Paste the description for LinkedIn and other postings Claude can't open. Pasting several links into one link box splits them into separate roles.
+              {mode === "account"
+                ? "Add each role's link and paste its job description — Claude reads the description you paste (it can't open links from inside this page)."
+                : "Add each role's link and, if you have it, the job description. Paste the description for LinkedIn and other postings Claude can't open."}{" "}Pasting several links into one link box splits them into separate roles.
             </div>
 
             <div style={{ maxHeight: "58vh", overflowY: "auto", marginBottom: 10, paddingRight: 4 }}>
@@ -368,7 +400,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
                         Already in tracker as #{dup.num} {dup.company} — this role will be skipped.
                       </div>
                     )}
-                    <label style={labelStyle}>Job description <span style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>(optional if Claude can open the link)</span></label>
+                    <label style={labelStyle}>Job description <span style={{ textTransform: "none", fontWeight: 400, letterSpacing: 0 }}>{mode === "account" ? "(required)" : "(optional if Claude can open the link)"}</span></label>
                     <textarea
                       value={r.jobDescription}
                       onChange={(e) => updateRow(i, "jobDescription", e.target.value)}
@@ -392,7 +424,12 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
 
             {error && <div style={{ color: "#d94f40", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-            {/* Claude API settings */}
+            {/* Claude API settings (GitHub Pages version only) */}
+            {mode === "account" ? (
+              <div style={{ fontSize: 12, color: "#555", border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#F0FDF4" }}>
+                Scoring runs on your Claude account — no API key needed. The first time, Claude asks you to allow this page.
+              </div>
+            ) : inArtifact ? null : (
             <div style={{ border: "1px solid #eee", borderRadius: 10, padding: "8px 12px", marginBottom: 12, background: "#fafafa" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 12, color: "#555" }}>
@@ -432,10 +469,11 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
                 </div>
               )}
             </div>
+            )}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
               <button onClick={onClose} style={secondaryButtonStyle}>Cancel</button>
-              {hasKey ? (
+              {mode !== "manual" ? (
                 <>
                   <button onClick={generatePrompt} style={secondaryButtonStyle}>Copy prompt instead</button>
                   <button onClick={startScoring} style={buttonStyle}>Score &amp; save {newJobs.length} role{newJobs.length === 1 ? "" : "s"}</button>
@@ -488,7 +526,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
               <div style={hintStyle}>
                 {done
                   ? `Done — ${savedCount} role${savedCount === 1 ? "" : "s"} saved${failedCount ? `, ${failedCount} failed` : ""}. Today's Top 5 has been refreshed.`
-                  : `Claude is reading and scoring each posting (${CONCURRENCY} at a time). Each role is saved as soon as it's scored.`}
+                  : `Claude is scoring each posting (${CONCURRENCY} at a time). Each role is saved as soon as it's scored.`}
               </div>
               <div style={{ maxHeight: "55vh", overflowY: "auto", border: "1px solid #eee", borderRadius: 8, marginBottom: 12 }}>
                 {runs.map((r, i) => {

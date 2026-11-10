@@ -1,3 +1,5 @@
+import { remote } from "./runtime.js";
+
 const PROFILE_KEY = "role-scorecard-profile";
 const CUSTOM_ROLES_KEY = "role-scorecard-custom-roles";
 const STATUS_OVERRIDES_KEY = "role-scorecard-status-overrides";
@@ -19,6 +21,7 @@ export function loadProfile() {
 
 export function saveProfile(profile) {
   try {
+    remote.saveProfile(profile);
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
   } catch (err) {
     console.error("Failed to save profile", err);
@@ -38,6 +41,7 @@ export function loadCustomRoles() {
 
 export function saveCustomRoles(roles) {
   try {
+    remote.saveCustomRoles(roles);
     localStorage.setItem(CUSTOM_ROLES_KEY, JSON.stringify(roles));
   } catch (err) {
     console.error("Failed to save custom roles", err);
@@ -57,6 +61,7 @@ export function loadStatusOverrides() {
 
 export function saveStatusOverrides(overrides) {
   try {
+    remote.saveStatusOverrides(overrides);
     localStorage.setItem(STATUS_OVERRIDES_KEY, JSON.stringify(overrides));
   } catch (err) {
     console.error("Failed to save status overrides", err);
@@ -76,6 +81,7 @@ export function loadJobDescriptions() {
 
 export function saveJobDescriptions(jobDescriptions) {
   try {
+    remote.saveJobDescriptions(jobDescriptions);
     localStorage.setItem(JOB_DESCRIPTIONS_KEY, JSON.stringify(jobDescriptions));
   } catch (err) {
     console.error("Failed to save job descriptions", err);
@@ -95,6 +101,7 @@ export function loadDateAppliedOverrides() {
 
 export function saveDateAppliedOverrides(overrides) {
   try {
+    remote.saveDateApplied(overrides);
     localStorage.setItem(DATE_APPLIED_OVERRIDES_KEY, JSON.stringify(overrides));
   } catch (err) {
     console.error("Failed to save date applied overrides", err);
