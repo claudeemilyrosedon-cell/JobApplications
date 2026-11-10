@@ -219,16 +219,21 @@ const REJECTED_STYLE = { bg: "#FEF2F2", color: "#991B1B", border: "#FCA5A5", lab
 const CLOSED_STYLE = { bg: "#F3F4F6", color: "#374151", border: "#9CA3AF", label: "✕ Closed" };
 const UNAPPLIED_STYLE = { bg: "#F5F5F5", color: "#666", border: "#ddd", label: "Un-applied" };
 const INTERVIEWING_STYLE = { bg: "#FAEEDA", color: "#633806", border: "#EF9F27", label: "◐ Interviewing" };
+const NO_RESPONSE_STYLE = { bg: "#F5F3FF", color: "#5B21B6", border: "#C4B5FD", label: "⊘ No response" };
+const NO_RESPONSE_DAYS = 90;
 
 const STATUS_TAG_META = {
   unapplied: UNAPPLIED_STYLE,
   applied: APPLIED_STYLE,
   interviewing: INTERVIEWING_STYLE,
+  no_response: NO_RESPONSE_STYLE,
   rejected: REJECTED_STYLE,
   closed: CLOSED_STYLE,
 };
 
 function getRoleStatus(role, overrides) {
+  // "in_review" = applied, but kept in review even after 90 days without a reply.
+  if (overrides[role.num] === "in_review") return "applied";
   if (overrides[role.num]) return overrides[role.num];
   if (role.rejected) return "rejected";
   if (role.closed || role.status === "closed") return "closed";
@@ -242,6 +247,25 @@ function getJobDescription(role, jobDescriptions) {
 
 function getDateApplied(role, dateAppliedOverrides) {
   return dateAppliedOverrides[role.num] || role.dateApplied || null;
+}
+
+// Dates are stored like "Jul 12, 2026" or, on older entries, "Jul 13" (no year).
+function parseAppliedDate(value, now = new Date()) {
+  if (!value) return null;
+  const str = String(value).trim();
+  let d = new Date(/\d{4}/.test(str) ? str : `${str}, ${now.getFullYear()}`);
+  if (isNaN(d)) return null;
+  if (!/\d{4}/.test(str) && d > now) d.setFullYear(d.getFullYear() - 1);
+  return d;
+}
+
+// Applied roles with no reply after NO_RESPONSE_DAYS show as "No response".
+function getEffectiveStatus(role, overrides, dateOverrides) {
+  const status = getRoleStatus(role, overrides);
+  if (status !== "applied" || overrides[role.num] === "in_review") return status;
+  const applied = parseAppliedDate(getDateApplied(role, dateOverrides));
+  if (applied && (Date.now() - applied) / 86400000 > NO_RESPONSE_DAYS) return "no_response";
+  return status;
 }
 
 function formatToday() {
@@ -329,19 +353,36 @@ function RoleScorecard() {
     setShowProfileModal(false);
   };
 
-  const setStatus = (num, status) => {
+  const statusOf = (r) => getEffectiveStatus(r, statusOverrides, dateAppliedOverrides);
+
+  const setStatus = (num, requested) => {
+    const role = allRoles.find(r => r.num === num);
+    // Choosing "In Review" on a role past 90 days keeps it in review on purpose.
+    const status = requested === "applied" && role && statusOf(role) === "no_response" ? "in_review" : requested;
     const next = { ...statusOverrides, [num]: status };
     setStatusOverrides(next);
     saveStatusOverrides(next);
 
     if (status === "applied") {
-      const role = allRoles.find(r => r.num === num);
       if (role && !getDateApplied(role, dateAppliedOverrides)) {
         const nextDates = { ...dateAppliedOverrides, [num]: formatToday() };
         setDateAppliedOverrides(nextDates);
         saveDateAppliedOverrides(nextDates);
       }
     }
+  };
+
+  // Saves a date picked in the tracker (YYYY-MM-DD) in the stored "Jul 12, 2026" format.
+  const setDateApplied = (num, iso) => {
+    const next = { ...dateAppliedOverrides };
+    if (iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      next[num] = new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    } else {
+      delete next[num];
+    }
+    setDateAppliedOverrides(next);
+    saveDateAppliedOverrides(next);
   };
 
   const setJobDescriptionForRole = (num, text) => {
@@ -397,7 +438,7 @@ function RoleScorecard() {
     raw: { profile, customRoles, statusOverrides, jobDescriptions, dateAppliedOverrides },
     roles: allRoles.map(r => ({
       ...r,
-      status: getRoleStatus(r, statusOverrides),
+      status: statusOf(r),
       dateApplied: getDateApplied(r, dateAppliedOverrides),
       priority: computePriority(r),
       jobDescription: getJobDescription(r, jobDescriptions) || undefined,
@@ -491,17 +532,18 @@ function RoleScorecard() {
   const tiers = [1,2,3,4,5];
   const sortByPriority = (roles) => [...roles].sort((a, b) => {
     // Applied/closed/rejected roles go to bottom when viewing all
-    const aInactive = getRoleStatus(a, statusOverrides) !== "unapplied" ? 1 : 0;
-    const bInactive = getRoleStatus(b, statusOverrides) !== "unapplied" ? 1 : 0;
+    const aInactive = statusOf(a) !== "unapplied" ? 1 : 0;
+    const bInactive = statusOf(b) !== "unapplied" ? 1 : 0;
     if (aInactive !== bInactive) return aInactive - bInactive;
     // Sort by tier first, then rank within tier
     if (a.tier !== b.tier) return a.tier - b.tier;
     return a.rank - b.rank;
   });
-  const baseFiltered = filterTier === "all" ? allRoles : filterTier === "applied" ? allRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied") : filterTier === "rejected" ? allRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected") : allRoles.filter(r => r.tier === Number(filterTier));
+  const baseFiltered = filterTier === "all" ? allRoles : filterTier === "applied" ? allRoles.filter(r => statusOf(r) === "applied") : filterTier === "rejected" ? allRoles.filter(r => statusOf(r) === "rejected") : filterTier === "no_response" ? allRoles.filter(r => statusOf(r) === "no_response") : allRoles.filter(r => r.tier === Number(filterTier));
   const filtered = sortByPriority(baseFiltered);
-  const rejectedCount = allRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected").length;
-  const appliedCount = allRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied").length;
+  const rejectedCount = allRoles.filter(r => statusOf(r) === "rejected").length;
+  const appliedCount = allRoles.filter(r => statusOf(r) === "applied").length;
+  const noResponseCount = allRoles.filter(r => statusOf(r) === "no_response").length;
 
   return (
     <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem" }}>
@@ -534,6 +576,7 @@ function RoleScorecard() {
         <button onClick={() => setFilterTier("all")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "all" ? "1.5px solid #111" : "1.5px solid #ddd", background: filterTier === "all" ? "#111" : "#fafafa", color: filterTier === "all" ? "white" : "#555", fontSize: 12, cursor: "pointer", fontWeight: filterTier === "all" ? 600 : 400 }}>All {allRoles.length}</button>
         <button onClick={() => setFilterTier("rejected")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "rejected" ? `1.5px solid ${REJECTED_STYLE.color}` : `1.5px solid ${REJECTED_STYLE.border}`, background: filterTier === "rejected" ? REJECTED_STYLE.color : REJECTED_STYLE.bg, color: filterTier === "rejected" ? "white" : REJECTED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✗ Rejected ({rejectedCount})</button>
         <button onClick={() => setFilterTier("applied")} style={{ padding: "6px 14px", borderRadius: 20, border: filterTier === "applied" ? `1.5px solid ${APPLIED_STYLE.color}` : "1.5px solid #86EFAC", background: filterTier === "applied" ? APPLIED_STYLE.color : APPLIED_STYLE.bg, color: filterTier === "applied" ? "white" : APPLIED_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>✓ Applied ({appliedCount})</button>
+        <button onClick={() => setFilterTier("no_response")} title={`Applied more than ${NO_RESPONSE_DAYS} days ago with no reply`} style={{ padding: "6px 14px", borderRadius: 20, border: `1.5px solid ${filterTier === "no_response" ? NO_RESPONSE_STYLE.color : NO_RESPONSE_STYLE.border}`, background: filterTier === "no_response" ? NO_RESPONSE_STYLE.color : NO_RESPONSE_STYLE.bg, color: filterTier === "no_response" ? "white" : NO_RESPONSE_STYLE.color, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>⊘ No response ({noResponseCount})</button>
         {tiers.map(t => {
           const m = TIER_META[t];
           const active = filterTier === String(t);
@@ -564,18 +607,19 @@ function RoleScorecard() {
 
       {/* Today's Top 5 */}
       {filterTier === "all" && (
-        <TopFivePanel roles={allRoles} getStatus={(r) => getRoleStatus(r, statusOverrides)} onSetStatus={setStatus} onOpenRole={openRole} />
+        <TopFivePanel roles={allRoles} getStatus={(r) => statusOf(r)} onSetStatus={setStatus} onOpenRole={openRole} />
       )}
 
       {/* Application Tracker Dashboard */}
       {(() => {
-        const appliedRoles = allRoles.filter(r => ["applied", "rejected", "interviewing"].includes(getRoleStatus(r, statusOverrides)));
-        const rejectedRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "rejected");
-        const inReviewRoles = appliedRoles.filter(r => getRoleStatus(r, statusOverrides) === "applied");
+        const appliedRoles = allRoles.filter(r => ["applied", "rejected", "interviewing", "no_response"].includes(statusOf(r)));
+        const rejectedRoles = appliedRoles.filter(r => statusOf(r) === "rejected");
+        const inReviewRoles = appliedRoles.filter(r => statusOf(r) === "applied");
+        const noResponseRoles = appliedRoles.filter(r => statusOf(r) === "no_response");
         return (
           <div style={{ background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "1rem 1.25rem", marginBottom: 20 }}>
             <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#888", marginBottom: 12 }}>Application Tracker</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
               <div style={{ background: "var(--surface-1)", borderRadius: 8, padding: "10px 12px", border: "0.5px solid var(--border)" }}>
                 <div style={{ fontSize: 10, color: "#888", marginBottom: 3 }}>Total Applied</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-primary)" }}>{appliedRoles.length}</div>
@@ -583,6 +627,10 @@ function RoleScorecard() {
               <div style={{ background: "#E1F5EE", borderRadius: 8, padding: "10px 12px", border: "0.5px solid #5DCAA5" }}>
                 <div style={{ fontSize: 10, color: "#085041", marginBottom: 3 }}>In Review</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: "#085041" }}>{inReviewRoles.length}</div>
+              </div>
+              <div style={{ background: NO_RESPONSE_STYLE.bg, borderRadius: 8, padding: "10px 12px", border: `0.5px solid ${NO_RESPONSE_STYLE.border}` }} title={`Applied more than ${NO_RESPONSE_DAYS} days ago with no reply`}>
+                <div style={{ fontSize: 10, color: NO_RESPONSE_STYLE.color, marginBottom: 3 }}>No response (90+ days)</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: NO_RESPONSE_STYLE.color }}>{noResponseRoles.length}</div>
               </div>
               <div style={{ background: "#FEF2F2", borderRadius: 8, padding: "10px 12px", border: "0.5px solid #FCA5A5" }}>
                 <div style={{ fontSize: 10, color: "#991B1B", marginBottom: 3 }}>Rejected</div>
@@ -600,15 +648,30 @@ function RoleScorecard() {
                 </tr>
               </thead>
               <tbody>
-                {appliedRoles.sort((a,b) => (getDateApplied(a, dateAppliedOverrides)||"").localeCompare(getDateApplied(b, dateAppliedOverrides)||"")).map(r => (
+                {appliedRoles.sort((a,b) => (parseAppliedDate(getDateApplied(a, dateAppliedOverrides)) || 0) - (parseAppliedDate(getDateApplied(b, dateAppliedOverrides)) || 0)).map(r => (
                   <tr key={r.num} style={{ borderBottom: "0.5px solid var(--border)" }}>
                     <td style={{ padding: "6px 8px", fontWeight: 500, color: "var(--text-primary)" }}>{r.company.split(" (")[0].split(" — ")[0]}</td>
                     <td style={{ padding: "6px 8px", color: "var(--text-secondary)", maxWidth: 200 }}>{r.title.split(" to ")[0].replace("Chief of Staff", "CoS").replace("Director, ", "").slice(0,35)}{r.title.length > 45 ? "…" : ""}</td>
                     <td style={{ padding: "6px 8px" }}>{r.resumeVersion ? <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 10, background: getResumeStyle(r.resumeVersion).bg, color: getResumeStyle(r.resumeVersion).color, border: `0.5px solid ${getResumeStyle(r.resumeVersion).border}`, fontWeight: 600 }}>Ver. {r.resumeVersion}</span> : "—"}</td>
-                    <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{getDateApplied(r, dateAppliedOverrides) || "—"}</td>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                      {(() => {
+                        const d = parseAppliedDate(getDateApplied(r, dateAppliedOverrides));
+                        const iso = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : "";
+                        return (
+                          <input
+                            type="date"
+                            value={iso}
+                            max={new Date().toISOString().slice(0, 10)}
+                            onChange={(e) => setDateApplied(r.num, e.target.value)}
+                            title={iso ? "Date applied — click to change" : "Add the date you applied so 'No response' can be tracked"}
+                            style={{ fontSize: 11, border: iso ? "1px solid transparent" : "1px dashed #C4B5FD", borderRadius: 6, padding: "1px 4px", background: iso ? "transparent" : "#F5F3FF", color: iso ? "inherit" : "#5B21B6", fontFamily: "inherit" }}
+                          />
+                        );
+                      })()}
+                    </td>
                     <td style={{ padding: "6px 8px" }}>
                       {(() => {
-                        const trackerStatus = getRoleStatus(r, statusOverrides);
+                        const trackerStatus = statusOf(r);
                         const sm = STATUS_TAG_META[trackerStatus] || APPLIED_STYLE;
                         return (
                           <select
@@ -618,6 +681,7 @@ function RoleScorecard() {
                           >
                             <option value="applied">In Review</option>
                             <option value="interviewing">Interviewing</option>
+                            <option value="no_response">No response</option>
                             <option value="rejected">Rejected</option>
                           </select>
                         );
@@ -653,7 +717,7 @@ function RoleScorecard() {
                   <span style={{ fontSize: 14, fontWeight: 600, color: "#111" }}>{role.company}</span>
                   <span style={{ fontSize: 11, padding: "1px 7px", borderRadius: 20, background: flagStyle.bg, color: flagStyle.color, border: `0.5px solid ${flagStyle.color}33`, whiteSpace: "nowrap" }}>{flagStyle.label}</span>
                   {(() => {
-                    const status = getRoleStatus(role, statusOverrides);
+                    const status = statusOf(role);
                     const sm = STATUS_TAG_META[status];
                     return (
                       <select
@@ -665,6 +729,7 @@ function RoleScorecard() {
                         <option value="unapplied">Un-applied</option>
                         <option value="applied">✓ Applied</option>
                         <option value="interviewing">◐ Interviewing</option>
+                        <option value="no_response">⊘ No response</option>
                         <option value="rejected">✗ Rejected</option>
                         <option value="closed">✕ Closed</option>
                       </select>

@@ -4,6 +4,7 @@ const STATUS_OPTIONS = [
   ["unapplied", "To apply"],
   ["applied", "✓ Applied"],
   ["interviewing", "◐ Interviewing"],
+  ["no_response", "⊘ No response"],
   ["rejected", "✗ Rejected"],
   ["closed", "✕ Closed"],
 ];
