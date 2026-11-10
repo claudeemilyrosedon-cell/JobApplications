@@ -3,6 +3,8 @@ import { loadProfile, saveProfile, loadCustomRoles, saveCustomRoles, loadStatusO
 import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
 import HiringManagerModal from "./HiringManagerModal.jsx";
+import TopFivePanel from "./TopFivePanel.jsx";
+import { computePriority } from "./scoring.js";
 
 const ROLES = [
   // TIER 1 — LA/Remote, Strong Fit, Apply Now
@@ -228,7 +230,7 @@ const STATUS_TAG_META = {
 function getRoleStatus(role, overrides) {
   if (overrides[role.num]) return overrides[role.num];
   if (role.rejected) return "rejected";
-  if (role.closed) return "closed";
+  if (role.closed || role.status === "closed") return "closed";
   if (role.applied) return "applied";
   return "unapplied";
 }
@@ -324,16 +326,50 @@ function RoleScorecard() {
     saveJobDescriptions(next);
   };
 
-  const handleAddRole = (fields) => {
-    const nextNum = Math.max(0, ...allRoles.map(r => r.num)) + 1;
-    const tierPeers = allRoles.filter(r => r.tier === fields.tier);
-    const nextRank = Math.max(0, ...tierPeers.map(r => r.rank)) + 1;
-    const newRole = { ...fields, num: nextNum, rank: nextRank };
-    const next = [...customRoles, newRole];
+  // Adds one or many scored roles in a single save. Existing roles are never modified.
+  const handleAddRoles = (newFields) => {
+    let nextNum = Math.max(0, ...allRoles.map(r => r.num));
+    const working = [...allRoles];
+    const added = [];
+    const nextJobDescriptions = { ...jobDescriptions };
+    for (const fields of newFields) {
+      nextNum += 1;
+      const tierPeers = working.filter(r => r.tier === fields.tier);
+      const nextRank = Math.max(0, ...tierPeers.map(r => r.rank)) + 1;
+      const newRole = { ...fields, num: nextNum, rank: nextRank };
+      working.push(newRole);
+      added.push(newRole);
+      if (fields.jobDescription) nextJobDescriptions[nextNum] = fields.jobDescription;
+    }
+    const next = [...customRoles, ...added];
     setCustomRoles(next);
     saveCustomRoles(next);
-    if (fields.jobDescription) setJobDescriptionForRole(nextNum, fields.jobDescription);
+    setJobDescriptions(nextJobDescriptions);
+    saveJobDescriptions(nextJobDescriptions);
     setShowAddRoleModal(false);
+  };
+
+  const openRole = (num) => {
+    setFilterTier("all");
+    setExpanded(num);
+    setTimeout(() => document.getElementById(`role-${num}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
+
+  // Download every role with its current status, date applied and saved job description.
+  const exportTracker = () => {
+    const data = allRoles.map(r => ({
+      ...r,
+      status: getRoleStatus(r, statusOverrides),
+      dateApplied: getDateApplied(r, dateAppliedOverrides),
+      priority: computePriority(r),
+      jobDescription: getJobDescription(r, jobDescriptions) || undefined,
+    }));
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `role_tracker_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
   const tiers = [1,2,3,4,5];
@@ -355,14 +391,15 @@ function RoleScorecard() {
     <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 900, margin: "0 auto", padding: "1.5rem 1rem" }}>
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: "#888", marginBottom: 6 }}>Career Advisor · Role Ranking</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#111", marginBottom: 4 }}>0 Roles Ranked by Fit</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: "#111", marginBottom: 4 }}>{allRoles.length} Roles Ranked by Fit</div>
         <div style={{ fontSize: 13, color: "#666" }}>Emily Rose Don · Los Angeles, CA · July 2026 · Ranked by: location fit, skills match, hire likelihood, salary, and COO path value</div>
       </div>
 
       {/* Profile / Add Role actions */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button onClick={() => setShowProfileModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Profile</button>
-        <button onClick={() => setShowAddRoleModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>+ Add Role</button>
+        <button onClick={() => setShowAddRoleModal(true)} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>+ Add Roles</button>
+        <button onClick={exportTracker} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #ddd", background: "#fafafa", color: "#555", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Export tracker</button>
       </div>
 
       {/* Tier filter */}
@@ -396,6 +433,11 @@ function RoleScorecard() {
             );
           })}
         </div>
+      )}
+
+      {/* Today's Top 5 */}
+      {filterTier === "all" && (
+        <TopFivePanel roles={allRoles} getStatus={(r) => getRoleStatus(r, statusOverrides)} onOpenRole={openRole} />
       )}
 
       {/* Application Tracker Dashboard */}
@@ -468,7 +510,7 @@ function RoleScorecard() {
         const flagStyle = FLAG_STYLES[role.flag] || FLAG_STYLES["Unknown"];
         const isOpen = expanded === role.num;
         return (
-          <div key={role.num} style={{ border: `1px solid ${isOpen ? tm.color + "55" : "#e8e8e8"}`, borderRadius: 10, marginBottom: 8, overflow: "hidden", transition: "border-color 0.15s" }}>
+          <div key={role.num} id={`role-${role.num}`} style={{ border: `1px solid ${isOpen ? tm.color + "55" : "#e8e8e8"}`, borderRadius: 10, marginBottom: 8, overflow: "hidden", transition: "border-color 0.15s" }}>
             <div onClick={() => setExpanded(isOpen ? null : role.num)} style={{ display: "flex", alignItems: "center", cursor: "pointer", background: isOpen ? tm.bg : "#fafafa", gap: 0 }}>
               {/* Rank */}
               <div style={{ width: 44, display: "flex", alignItems: "center", justifyContent: "center", padding: "14px 0", borderRight: "1px solid #e8e8e8", fontSize: 12, fontWeight: 700, color: isOpen ? tm.color : "#ccc", flexShrink: 0 }}>
@@ -515,8 +557,11 @@ function RoleScorecard() {
                     <div style={{ fontSize: 15, fontWeight: 700, color: role.fit >= 8 ? "#1baf7a" : role.fit >= 6 ? "#d97706" : "#d94f40" }}>{role.fit}/10</div>
                   </div>
                 )}
-                {role.hire !== "Unknown" && role.hire !== null && (
-                  <div style={{ textAlign: "center", display: "none" }}></div>
+                {role.fit !== null && (
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 10, color: "#999", marginBottom: 2 }}>Priority</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#333" }}>{computePriority(role)}</div>
+                  </div>
                 )}
                 {role.cos_path !== "Unknown" && role.cos_path && (
                   <div style={{ textAlign: "center" }}>
@@ -538,7 +583,7 @@ function RoleScorecard() {
                 <div>
                   <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#888", marginBottom: 5 }}>Key details</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {[["Location", role.location], ["Remote", role.remote === true ? "Yes" : role.remote === false ? "No (in-office)" : "Unknown"], ["Salary", role.salary], ["Hire likelihood", role.hire], ["COO path", role.cos_path]].map(([k,v]) => (
+                    {[["Location", role.location], ["Added", role.dateAdded], ["Deadline", role.deadline], ["Confirm", Array.isArray(role.openQuestions) && role.openQuestions.length ? role.openQuestions.join("; ") : null], ["Remote", role.remote === true ? "Yes" : role.remote === false ? "No (in-office)" : "Unknown"], ["Salary", role.salary], ["Hire likelihood", role.hire], ["COO path", role.cos_path]].filter(([k,v]) => v || !["Added", "Deadline", "Confirm"].includes(k)).map(([k,v]) => (
                       <div key={k} style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: 6 }}>
                         <div style={{ fontSize: 11, color: "#999" }}>{k}</div>
                         <div style={{ fontSize: 12, color: "#333", fontWeight: 500 }}>{v || "Unknown"}</div>
@@ -578,7 +623,7 @@ function RoleScorecard() {
         <ProfileModal profile={profile} onSave={handleSaveProfile} onClose={() => setShowProfileModal(false)} />
       )}
       {showAddRoleModal && (
-        <AddRoleModal profile={profile} onAdd={handleAddRole} onClose={() => setShowAddRoleModal(false)} />
+        <AddRoleModal profile={profile} existingRoles={allRoles} onAdd={handleAddRoles} onClose={() => setShowAddRoleModal(false)} />
       )}
       {reviewRole && (
         <HiringManagerModal
