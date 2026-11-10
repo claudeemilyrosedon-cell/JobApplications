@@ -31,8 +31,3 @@ dist-ssr
 *.sln
 *.sw?
 dist-artifact
-scored.json
-scoring-prompt.md
-jobs.json
-summary.md
-!public/data/
