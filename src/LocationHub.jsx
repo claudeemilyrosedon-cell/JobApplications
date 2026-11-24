@@ -33,7 +33,7 @@ const STATUS_CHIP = {
 
 function readHash() {
   const h = (typeof window !== "undefined" ? window.location.hash : "").replace("#", "");
-  return ["home", "la", "la-all", "raleigh", "charlotte", "atlanta"].includes(h) ? h : "home";
+  return ["home", "la", "raleigh", "charlotte", "atlanta"].includes(h) ? h : "home";
 }
 
 // LA search: built-in roles + roles added on the site, with live statuses.
@@ -160,7 +160,7 @@ function CityView({ city, roles, onOpenAll }) {
       {top.map((r, i) => <RoleCard key={`${city}-${r.id}`} role={r} rank={i + 1} />)}
       {city === "la" && (
         <button onClick={onOpenAll} style={{ marginTop: 6, padding: "8px 16px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-          Open the full LA tracker ({roles.length} active roles) →
+          Open the full application tracker →
         </button>
       )}
       {city !== "la" && rest.length > 0 && (
@@ -183,37 +183,39 @@ function CityView({ city, roles, onOpenAll }) {
 function HomeView({ lists, go }) {
   const all = ["la", "raleigh", "charlotte", "atlanta"].flatMap((k) => lists[k]);
   all.sort((a, b) => b.score - a.score);
-  const best = topUnique(all, 10);
+  const best = topUnique(all, 8);
   return (
     <div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: "#111", marginBottom: 4 }}>Best roles overall</div>
-      <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, marginBottom: 14 }}>
-        The top 10 across all four searches, one per company. The best bets are remote roles based on the coasts: you can take the job
-        to NC or Atlanta, and still have it when you move back in 1–3 years.
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginBottom: 20 }}>
-        {["la", "raleigh", "charlotte", "atlanta"].map((k) => {
-          const top = lists[k][0];
-          const c = CITY[k];
-          return (
-            <div key={k} onClick={() => go(k)} style={{ cursor: "pointer", border: `1.5px solid ${c.color}33`, background: c.bg, borderRadius: 12, padding: "10px 12px" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.05em", textTransform: "uppercase" }}>{c.label}</div>
-              <div style={{ fontSize: 12, color: "#666", margin: "2px 0 6px" }}>{lists[k].length} roles scored</div>
-              {top && <div style={{ fontSize: 13, color: "#111", lineHeight: 1.35 }}><b>#1 {top.company}</b> · {top.score}<div style={{ color: "#555", fontSize: 12 }}>{top.title}</div></div>}
-              <div style={{ fontSize: 12, fontWeight: 600, color: c.color, marginTop: 6 }}>See top 5 →</div>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "1.25rem 1rem 0" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginBottom: 12 }}>
+          {["la", "raleigh", "charlotte", "atlanta"].map((k) => {
+            const top = lists[k][0];
+            const c = CITY[k];
+            return (
+              <div key={k} onClick={() => go(k)} style={{ cursor: "pointer", border: `1.5px solid ${c.color}33`, background: c.bg, borderRadius: 12, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: c.color, letterSpacing: "0.05em", textTransform: "uppercase" }}>{c.label} · top 5 →</div>
+                {top && <div style={{ fontSize: 13, color: "#111", lineHeight: 1.35, marginTop: 4 }}><b>#1 {top.company}</b> · {top.score}<div style={{ color: "#555", fontSize: 12 }}>{top.title}</div></div>}
+              </div>
+            );
+          })}
+        </div>
+        <details style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: "10px 14px", background: "#fafafa" }}>
+          <summary style={{ fontSize: 14, fontWeight: 700, color: "#111", cursor: "pointer" }}>Best roles overall, all 4 cities (top {best.length})</summary>
+          <div style={{ marginTop: 8 }}>
+            {best.map((r) => (
+              <div key={`best-${r.city}-${r.id}`} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13, padding: "6px 0", borderBottom: "1px solid #eee" }}>
+                <span style={{ fontWeight: 800, color: CITY[r.city].color, minWidth: 24 }}>{r.score}</span>
+                <Chip city={r.city} />
+                <span style={{ flex: 1 }}><b>{r.company}</b> · {r.title} <StatusChip status={r.status} /></span>
+              </div>
+            ))}
+            <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5, marginTop: 8 }}>
+              LA uses the tracker's priority score; Raleigh-Durham, Charlotte and Atlanta use the lifestyle score (can the job move back with you, travel freedom, commute). Both run 0–100.
             </div>
-          );
-        })}
+          </div>
+        </details>
       </div>
-
-      {best.map((r, i) => <RoleCard key={`home-${r.city}-${r.id}`} role={r} rank={i + 1} showCity />)}
-
-      <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5, marginTop: 12 }}>
-        How to read the scores: LA uses the tracker's priority score (fit, hire odds, LA or remote, pay, COO path). Raleigh-Durham, Charlotte and Atlanta use the
-        lifestyle score (fit, hire odds, can it move back with you, travel freedom, pay, COO path; Atlanta also scores the commute). Both scales run 0–100.
-        Charlotte has no role above 65, so a remote role is the stronger play there.
-      </div>
+      <RoleScorecard />
     </div>
   );
 }
@@ -237,7 +239,7 @@ export default function LocationHub() {
     window.scrollTo(0, 0);
   };
 
-  const active = tab === "la-all" ? "la" : tab;
+  const active = tab;
 
   return (
     <div style={{ fontFamily: FONT }}>
@@ -260,17 +262,11 @@ export default function LocationHub() {
         </div>
       </div>
 
-      {tab === "la-all" ? (
-        <div>
-          <div style={{ maxWidth: 900, margin: "0 auto", padding: "12px 1rem 0" }}>
-            <button onClick={() => go("la")} style={{ fontSize: 12, fontWeight: 600, color: CITY.la.color, background: "none", border: "none", cursor: "pointer", padding: 0 }}>← Back to the LA top 5</button>
-          </div>
-          <RoleScorecard />
-        </div>
+      {tab === "home" ? (
+        <HomeView lists={lists} go={go} />
       ) : (
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "1.25rem 1rem 3rem" }}>
-          {tab === "home" && <HomeView lists={lists} go={go} />}
-          {tab !== "home" && <CityView city={tab} roles={lists[tab]} onOpenAll={() => go("la-all")} />}
+          <CityView city={tab} roles={lists[tab]} onOpenAll={() => go("home")} />
         </div>
       )}
     </div>
