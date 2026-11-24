@@ -7,7 +7,7 @@ import TopFivePanel from "./TopFivePanel.jsx";
 import { computePriority, normalizeUrl } from "./scoring.js";
 import { inArtifact, loadRemote } from "./runtime.js";
 
-const ROLES = [
+export const ROLES = [
   // TIER 1 — LA/Remote, Strong Fit, Apply Now
   { rank: 1, num: 51, resumeVersion: "D", applied: true, dateApplied: "Jul 13", status: "applied", dateApplied: "Jul 12, 2026", status: "applied", company: "Chaos Industries", title: "Chief of Staff to the CPO", location: "El Segundo, CA", remote: false, salary: "$175–250K", fit: 9, hire: "High", cos_path: "4–6 yrs", tier: 1, url: "https://job-boards.greenhouse.io/chaosindustries/jobs/5166427007", note: "PM background explicitly preferred. LA-based (El Segundo = 15 min from LA proper). Defense AI — $1B raised, El Segundo HQ. Owns OKRs, cross-functional execution, board prep. Security clearance question on application but role doesn't require it. Her spec writing + cross-functional PM scope + AI tools are direct matches. Best LA-based CoS on the entire list.", flag: "LA" },
   { rank: 2, num: 52, resumeVersion: "A", applied: true, dateApplied: "Jul 15", status: "applied", dateApplied: "Jul 15, 2026", status: "applied", company: "True Classic", title: "Chief of Staff", location: "Calabasas, CA", remote: false, salary: "Competitive (unlisted)", fit: 8, hire: "High", cos_path: "5–7 yrs", tier: 1, url: "https://job-boards.greenhouse.io/trueclassicteesllc/jobs/5188596008", note: "Calabasas is LA-adjacent (25 min). Reports to CEO, President, and Chief Transformation Officer. DTC apparel brand — her Green Street Digital DTC client work (Le Mieux, Mindworks) is a direct credential. 3x/week in-office. Wholesale channel acceleration, GTM ownership, ecommerce ops — her exact background. No consulting background required.", flag: "LA" },
@@ -260,7 +260,7 @@ function parseAppliedDate(value, now = new Date()) {
 }
 
 // Applied roles with no reply after NO_RESPONSE_DAYS show as "No response".
-function getEffectiveStatus(role, overrides, dateOverrides) {
+export function getEffectiveStatus(role, overrides, dateOverrides) {
   const status = getRoleStatus(role, overrides);
   if (status !== "applied" || overrides[role.num] === "in_review") return status;
   const applied = parseAppliedDate(getDateApplied(role, dateOverrides));
@@ -310,7 +310,7 @@ const FLAG_STYLES = {
   "Chicago": { bg: "#FAEEDA", color: "#633806", label: "🏙 Chicago" },
 };
 
-function RoleScorecard() {
+export function RoleScorecard() {
   const [expanded, setExpanded] = useState(null);
   const [filterTier, setFilterTier] = useState("all");
   const [profile, setProfile] = useState(() => loadProfile());
@@ -833,7 +833,7 @@ function RoleScorecard() {
 const SITE_PASSWORD = "OhNoYouKnowInspect";
 const AUTH_KEY = "role-scorecard-auth";
 
-function PasswordGate() {
+function PasswordGate({ children }) {
   const [authed, setAuthed] = useState(() => {
     try { return sessionStorage.getItem(AUTH_KEY) === "true"; } catch { return false; }
   });
@@ -841,7 +841,7 @@ function PasswordGate() {
   const [error, setError] = useState(false);
 
   // The Claude artifact is private to its owner, so it needs no password.
-  if (inArtifact || authed) return <RoleScorecard />;
+  if (inArtifact || authed) return children || <RoleScorecard />;
 
   const submit = (e) => {
     e.preventDefault();
