@@ -1,3 +1,5 @@
+import { CITY_FIELDS } from "./cityFields.js";
+
 // Scoring shared by the batch Add Roles flow and the Today's Top 5 panel.
 // Mirrors the role-fit-assessment and daily-top-5 skills so the site and
 // Claude rank roles the same way.
@@ -202,6 +204,13 @@ export function normalizeUrl(url) {
 // ---------------------------------------------------------------------------
 
 export const CITY_KEYS = ["la", "raleigh", "charlotte", "atlanta"];
+
+// Known city details for roles added before the prompt asked for them.
+function withCityFields(role) {
+  if (role.cityAccess && role.returnReady) return role;
+  const known = CITY_FIELDS[normalizeUrl(role.url)];
+  return known ? { ...known, ...role, cityAccess: role.cityAccess || known.cityAccess } : role;
+}
 export const LIFESTYLE_FLOOR = 160000;
 
 const CITY_PATTERNS = {
@@ -334,7 +343,8 @@ function lifestyleScore(role, city) {
 }
 
 // { la, raleigh, charlotte, atlanta } → { score, parts?, penalty?, access, drive? } or null.
-export function cityScores(role) {
+export function cityScores(input) {
+  const role = withCityFields(input);
   const out = {};
   const laAccess = cityAccess(role, "la");
   out.la = laAccess === "none" ? null : { score: computePriority(role), access: laAccess };
