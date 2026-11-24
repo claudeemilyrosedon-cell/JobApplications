@@ -4,7 +4,7 @@ import ProfileModal from "./ProfileModal.jsx";
 import AddRoleModal from "./AddRoleModal.jsx";
 import HiringManagerModal from "./HiringManagerModal.jsx";
 import TopFivePanel from "./TopFivePanel.jsx";
-import { computePriority, normalizeUrl } from "./scoring.js";
+import { computePriority, normalizeUrl, cityLine } from "./scoring.js";
 import { inArtifact, loadRemote } from "./runtime.js";
 
 export const ROLES = [
@@ -753,6 +753,12 @@ export function RoleScorecard() {
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 10, color: "#999", marginBottom: 2 }}>Priority</div>
                     <div style={{ fontSize: 15, fontWeight: 700, color: "#333" }}>{computePriority(role)}</div>
+                  </div>
+                )}
+                {role.fit !== null && (
+                  <div style={{ textAlign: "center" }} title="Score for each search city (— means she couldn't do it from there)">
+                    <div style={{ fontSize: 10, color: "#999", marginBottom: 2 }}>By city</div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#555", whiteSpace: "nowrap" }}>{cityLine(role)}</div>
                   </div>
                 )}
                 {role.cos_path !== "Unknown" && role.cos_path && (

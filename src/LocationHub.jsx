@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { RoleScorecard, ROLES, getEffectiveStatus } from "./App.jsx";
 import { REGIONS } from "./regions.js";
-import { computePriority, isDisqualified, companyKey, todayScore, inferLocationClass } from "./scoring.js";
-import { loadCustomRoles, loadStatusOverrides, loadDateAppliedOverrides } from "./storage.js";
+import { computePriority, isDisqualified, companyKey, todayScore, cityScores, cityAccess, normalizeUrl } from "./scoring.js";
+import { loadCustomRoles, loadStatusOverrides, loadDateAppliedOverrides, saveStatusOverrides, saveDateAppliedOverrides } from "./storage.js";
 
 const FONT = "'Inter', system-ui, sans-serif";
 
@@ -74,6 +74,52 @@ function regionRoles(key) {
   return REGIONS[key].roles.map((r) => ({ ...r, city: key, status: st[`${key}-${r.id}`] || "unapplied" }));
 }
 
+// Tracker roles (built-in + added on the site) scored for a city with the
+// lifestyle formula. Roles she couldn't do from that city are left out.
+function trackerCityRoles(key) {
+  const curated = REGIONS[key].roles;
+  const curatedUrls = new Set(curated.map((r) => normalizeUrl(r.url)).filter(Boolean));
+  const curatedKeys = new Set(curated.map((r) => `${companyKey(r.company)}|${String(r.title).toLowerCase()}`));
+  const out = [];
+  for (const r of trackerRoles()) {
+    if (["rejected", "closed"].includes(r.status) || r.closed) continue;
+    if (isDisqualified(r) || !r.resumeVersion || r.duplicateOf || Number(r.tier) === 5) continue;
+    if (r.url && curatedUrls.has(normalizeUrl(r.url))) continue;
+    if (curatedKeys.has(`${companyKey(r.company)}|${String(r.title).toLowerCase()}`)) continue;
+    const cs = cityScores(r)[key];
+    if (!cs) continue;
+    const t = todayScore(r);
+    if (t.expired) continue;
+    out.push({
+      id: `t${r.num}`, num: r.num, source: "tracker", city: key,
+      company: r.company, title: r.title, location: r.location, salary: r.salary,
+      fit: r.fit, hire: r.hire, resumeVersion: r.resumeVersion, status: r.status,
+      parts: cs.parts, penalty: cs.penalty, drive: cs.drive,
+      score: Math.max(0, Math.min(100, cs.score + (t.score - t.base))),
+      reasons: t.reasons, why: r.note, url: r.url,
+    });
+  }
+  return out;
+}
+
+// Curated city roles plus tracker roles, best first.
+function cityRoles(key) {
+  return [...regionRoles(key), ...trackerCityRoles(key)].sort((a, b) => b.score - a.score || (b.fit || 0) - (a.fit || 0));
+}
+
+function formatToday() {
+  return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Mark a tracker role applied from a city tab (same storage the tracker uses).
+function markTrackerApplied(num) {
+  const st = loadStatusOverrides();
+  st[num] = "applied";
+  saveStatusOverrides(st);
+  const dates = loadDateAppliedOverrides();
+  if (!dates[num]) { dates[num] = formatToday(); saveDateAppliedOverrides(dates); }
+}
+
 // Companies already applied to anywhere (tracker or city tabs), so today's picks skip them.
 function appliedCompanies() {
   const set = new Set(trackerRoles().filter((r) => r.status !== "unapplied").map((r) => companyKey(r.company)));
@@ -86,7 +132,7 @@ function laToday(n) {
   const skip = appliedCompanies();
   const ranked = trackerRoles()
     .filter((r) => r.status === "unapplied" && r.tier >= 1 && r.tier <= 3 && r.resumeVersion && !r.duplicateOf)
-    .filter((r) => inferLocationClass(r) !== "relocation")
+    .filter((r) => cityAccess(r, "la") !== "none")
     .map((r) => ({ ...r, ...todayScore(r) }))
     .filter((r) => !r.expired && r.base > 0)
     .sort((a, b) => b.score - a.score || (Number(b.fit) || 0) - (Number(a.fit) || 0));
@@ -95,7 +141,7 @@ function laToday(n) {
 
 // Today's picks for a city: un-applied roles, best lifestyle score first.
 function cityToday(key, n) {
-  const ranked = regionRoles(key).filter((r) => r.status === "unapplied").sort((a, b) => b.score - a.score);
+  const ranked = cityRoles(key).filter((r) => r.status === "unapplied");
   return pickUnique(ranked, n, appliedCompanies());
 }
 
@@ -224,6 +270,12 @@ function CityView({ city, onOpenAll, onChange }) {
   const appliedHere = city === "la" ? [] : regionRoles(city).filter((r) => r.status !== "unapplied");
 
   const setCity = (role, status) => {
+    if (role.source === "tracker") {
+      if (status === "applied") markTrackerApplied(role.num);
+      bump((x) => x + 1);
+      onChange?.();
+      return;
+    }
     const st = loadCityStatus();
     const key = `${city}-${role.id}`;
     if (status === "unapplied") delete st[key]; else st[key] = status;
@@ -241,7 +293,7 @@ function CityView({ city, onOpenAll, onChange }) {
       <div style={{ fontSize: 12, color: "#999", marginBottom: 14 }}>
         {city === "la"
           ? "Same rules as Today's Top 5 in the tracker: not yet applied, tier 1–3, LA-based or remote, newer postings and close deadlines rank higher. Skips companies you've already applied to."
-          : `${c.scale}. Not yet applied, one per company, skipping companies you've already applied to. Mark a role applied and the next one moves up.`}
+          : `${c.scale}. Not yet applied, one per company, skipping companies you've already applied to. Includes tracker roles you can do from here (remote, or based in ${c.label}). Mark a role applied and the next one moves up.`}
       </div>
       {picks.length === 0 && <div style={{ fontSize: 13, color: "#666", padding: "12px 0" }}>Nothing left to apply to here. Add or rescore roles to refill this list.</div>}
       {picks.map((r, i) => (
@@ -308,7 +360,7 @@ function HomeView({ lists, go }) {
               </div>
             ))}
             <div style={{ fontSize: 11, color: "#888", lineHeight: 1.5, marginTop: 8 }}>
-              LA uses the tracker's priority score; Raleigh-Durham, Charlotte and Atlanta use the lifestyle score (can the job move back with you, travel freedom, commute). Both run 0–100.
+              Every tracker role is scored for all 4 cities. LA uses the tracker's priority score; Raleigh-Durham, Charlotte and Atlanta use the lifestyle score (can the job move back with you, travel freedom, commute). Both run 0–100.
             </div>
           </div>
         </details>
@@ -321,7 +373,7 @@ function HomeView({ lists, go }) {
 export default function LocationHub() {
   const [tab, setTab] = useState(readHash);
   const [lists, setLists] = useState(() => ({
-    la: laRoles(), raleigh: regionRoles("raleigh"), charlotte: regionRoles("charlotte"), atlanta: regionRoles("atlanta"),
+    la: laRoles(), raleigh: cityRoles("raleigh"), charlotte: cityRoles("charlotte"), atlanta: cityRoles("atlanta"),
   }));
 
   useEffect(() => {
@@ -330,7 +382,7 @@ export default function LocationHub() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const refresh = () => setLists({ la: laRoles(), raleigh: regionRoles("raleigh"), charlotte: regionRoles("charlotte"), atlanta: regionRoles("atlanta") });
+  const refresh = () => setLists({ la: laRoles(), raleigh: cityRoles("raleigh"), charlotte: cityRoles("charlotte"), atlanta: cityRoles("atlanta") });
 
   const go = (key) => {
     refresh();

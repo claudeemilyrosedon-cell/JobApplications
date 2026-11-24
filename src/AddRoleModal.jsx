@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { computePriority, normalizeUrl } from "./scoring.js";
+import { computePriority, normalizeUrl, cityLine } from "./scoring.js";
 import { getSample } from "./runtime.js";
 
 const SAMPLE_ERRORS = {
@@ -83,6 +83,13 @@ SCREENS — check every posting:
 - Anonymous company → add "company name and investors" to openQuestions. Gated posting you cannot read → tier 5, flag "LinkedIn" or "Inaccessible", fill what you can.
 - Duplicates: if a job matches an EXISTING ROLE below (same company + role, or same URL), set duplicateOf to that #number.
 
+FOUR SEARCH LOCATIONS — score every posting for each one:
+She is searching Los Angeles (home today) and three cities a family move could take her to for 1–3 years before returning to the coast: Raleigh-Durham (home base Cary), Charlotte (Ballantyne) and Atlanta (Johns Creek / Suwanee / Cumming). The site turns these fields into a 0–100 score per city, so be precise:
+- cityAccess: for EACH city, how she would do this job while living there: "remote" (fully remote, or remote-eligible from that city), "hybrid" (office in or commutable to that city, part-week), "onsite" (office in that city, 4–5 days), or "none" (would need to live somewhere else). A Durham office is "none" from Charlotte; an LA office is "none" from the three Southeast cities.
+- returnReady: can she keep this job after moving back to the coast? "remote_keepable" (fully remote), "coastal_hub" (offices or HQ in NYC/SF/LA or similar, so a transfer is realistic), "local_only" (job only exists in a Southeast city).
+- atlantaArea: where the Atlanta office is: "north_suburbs" (Alpharetta, Johns Creek, Suwanee, Cumming, Duluth, Roswell, Norcross), "perimeter" (Sandy Springs, Dunwoody, Brookhaven), "intown" (Midtown, Downtown, Buckhead), "unknown" (Atlanta named, area not), or null when there is no Atlanta office.
+tier, flag, locationClass and compClass stay judged from LA; the city fields carry the Southeast view.
+
 TIERS: 1 Apply Now (LA/remote, strong fit, salary on target, COO path clear) · 2 Apply — review location · 3 Apply — minor gaps · 4 Research first / do not apply · 5 Details unavailable.
 FLAGS: LA, Remote, Remote+, NYC, SF, Bay Area, Chicago, Miami/NYC, Palo Alto, Non-LA hybrid, Reach, No, Unknown, Inaccessible, LinkedIn.
 
@@ -114,6 +121,9 @@ Reply with ONLY a JSON array (no markdown fences, no commentary) — one object 
   "postedDate": "YYYY-MM-DD or null",
   "openQuestions": ["short things to confirm before applying, e.g. 'comp', 'remote from LA'"],
   "duplicateOf": existing #number or null,
+  "cityAccess": { "la": "remote | hybrid | onsite | none", "raleigh": "...", "charlotte": "...", "atlanta": "..." },
+  "returnReady": "remote_keepable | coastal_hub | local_only",
+  "atlantaArea": "north_suburbs | perimeter | intown | unknown, or null",
   "note": "3–5 dense sentences: company context, how requirements map to her specific wins (name them), honest gaps, comp/location/COO-path verdict, what to confirm, and why this resume version"
 }`;
 }
@@ -147,6 +157,9 @@ function toRole(parsed, fallbackJob) {
     postedDate: parsed.postedDate || null,
     openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.filter(Boolean) : [],
     duplicateOf: parsed.duplicateOf ?? null,
+    cityAccess: parsed.cityAccess && typeof parsed.cityAccess === "object" ? parsed.cityAccess : undefined,
+    returnReady: parsed.returnReady || undefined,
+    atlantaArea: parsed.atlantaArea || undefined,
     url,
     jobDescription: fallbackJob?.jobDescription || "",
     applied: false,
@@ -489,6 +502,9 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
                             {r.role.disqualified ? " · Do not apply" : ""}
                           </div>
                         )}
+                        {r.role && r.status === "saved" && (
+                          <div style={{ fontSize: 11, color: "#666" }}>{cityLine(r.role)}</div>
+                        )}
                         {r.message && <div style={{ fontSize: 11, color: st.color }}>{r.message}</div>}
                       </div>
                     </div>
@@ -510,7 +526,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: "#fafafa", borderBottom: "1px solid #eee" }}>
-                    {["", "Company — Title", "Tier", "Fit", "Priority", "Resume", "Notes"].map((h) => (
+                    {["", "Company — Title", "Tier", "Fit", "Priority / city", "Resume", "Notes"].map((h) => (
                       <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: ".05em" }}>{h}</th>
                     ))}
                   </tr>
@@ -530,7 +546,7 @@ export default function AddRoleModal({ profile, existingRoles, onAdd, onClose })
                         </td>
                         <td style={{ padding: "6px 8px" }}>{row.role.tier || "—"}</td>
                         <td style={{ padding: "6px 8px" }}>{row.role.fit ?? "—"}</td>
-                        <td style={{ padding: "6px 8px", fontWeight: 700 }}>{row.priority}</td>
+                        <td style={{ padding: "6px 8px", fontWeight: 700 }}>{row.priority}<div style={{ fontSize: 10, fontWeight: 400, color: "#777", whiteSpace: "nowrap" }}>{cityLine(row.role)}</div></td>
                         <td style={{ padding: "6px 8px" }}>{row.role.resumeVersion || "—"}</td>
                         <td style={{ padding: "6px 8px", fontSize: 11, color: "#b45309" }}>
                           {row.missing.length > 0 && <div style={{ color: "#d94f40" }}>Missing: {row.missing.join(", ")}</div>}

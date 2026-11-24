@@ -189,3 +189,161 @@ export function companyKey(company) {
 export function normalizeUrl(url) {
   return String(url || "").trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/, "");
 }
+
+// ---------------------------------------------------------------------------
+// Per-city scores. Every tracker role gets a 0–100 score for each of the four
+// search locations, so a newly added role lands in the right city tabs.
+//   la        → the tracker priority above (LA-based or remote roles only)
+//   raleigh   → NC lifestyle formula (fit, hire, return-ready, travel, pay vs $160K, COO path)
+//   charlotte → same NC formula
+//   atlanta   → Atlanta formula (adds commute from the north-suburb target homes)
+// Mirrors claude/nc_lifestyle_scoring.md in the Job Applications project.
+// A role scores null for a city when she couldn't do it from there.
+// ---------------------------------------------------------------------------
+
+export const CITY_KEYS = ["la", "raleigh", "charlotte", "atlanta"];
+export const LIFESTYLE_FLOOR = 160000;
+
+const CITY_PATTERNS = {
+  la: /los angeles|\bL\.?A\.?\b|santa monica|culver city|el segundo|playa vista|venice, ca|pasadena|burbank|irvine|long beach|torrance|hawthorne|glendale|west hollywood|beverly hills|orange county|southern california|marina del rey/i,
+  raleigh: /raleigh|durham|\bcary\b|chapel hill|morrisville|research triangle|\bRTP\b|triangle/i,
+  charlotte: /charlotte|ballantyne|indian land|fort mill/i,
+  atlanta: /atlanta|alpharetta|sandy springs|suwanee|duluth|johns creek|cumming|norcross|dunwoody|marietta|buckhead|roswell|peachtree corners|brookhaven|\bGA\b|georgia/i,
+};
+const COASTAL_RE = /new york|\bNYC\b|san francisco|\bSF\b|bay area|palo alto|mountain view|seattle|boston|los angeles|\bLA\b|santa monica|washington,? d\.?c|\bDC\b|miami/i;
+const ATL_AREAS = {
+  north_suburbs: /alpharetta|johns creek|suwanee|cumming|duluth|roswell|milton|norcross|lawrenceville|peachtree corners|windward/i,
+  perimeter: /sandy springs|dunwoody|perimeter|brookhaven|chamblee/i,
+  intown: /midtown|downtown|buckhead|atlantic station|west midtown|old fourth|ponce/i,
+};
+const ACCESS = ["remote", "hybrid", "onsite", "none"];
+
+function workMode(loc) {
+  if (/\bremote\b/i.test(loc) && !/not remote|no remote/i.test(loc)) return "remote";
+  if (/hybrid|\d\s*(?:–|-|to)?\s*\d?\s*days?/i.test(loc)) return "hybrid";
+  if (/on-?site|in-?person|in-?office|office \+|5 days/i.test(loc)) return "onsite";
+  return "hybrid";
+}
+
+// How she'd work this job from a city: remote | hybrid | onsite | none.
+export function cityAccess(role, city) {
+  const given = role.cityAccess && role.cityAccess[city];
+  if (ACCESS.includes(given)) return given;
+  const loc = String(role.location || "");
+  if (city === "la") {
+    const lc = inferLocationClass(role);
+    if (lc === "relocation") return "none";
+    const elsewhere = ["raleigh", "charlotte", "atlanta"].some((c) => CITY_PATTERNS[c].test(loc));
+    if (elsewhere && !CITY_PATTERNS.la.test(loc) && role.remote !== true && !/\bremote\b/i.test(loc)) return "none";
+    return lc === "unknown" ? "hybrid" : workMode(loc + (role.remote === true ? " remote" : ""));
+  }
+  if (CITY_PATTERNS[city].test(loc)) return workMode(loc);
+  if (role.remote === true || (/\bremote\b/i.test(loc) && !/not remote|no remote/i.test(loc))) return "remote";
+  return "none";
+}
+
+// Can she keep the job after moving back to the coast?
+export function returnReady(role) {
+  if (["remote_keepable", "coastal_hub", "local_only"].includes(role.returnReady)) return role.returnReady;
+  const loc = String(role.location || "");
+  if (role.remote === true || /\bremote\b/i.test(loc)) return "remote_keepable";
+  if (COASTAL_RE.test(loc)) return "coastal_hub";
+  return "local_only";
+}
+
+function atlantaArea(role) {
+  if (["north_suburbs", "perimeter", "intown", "unknown"].includes(role.atlantaArea)) return role.atlantaArea;
+  const loc = String(role.location || "");
+  for (const [k, re] of Object.entries(ATL_AREAS)) if (re.test(loc)) return k;
+  return "unknown";
+}
+
+const LIFE_HIRE = {
+  "very high": 15, "high": 12, "medium-high": 10, "medium": 8,
+  "medium-low": 5, "low-medium": 4, "low": 2, "very low": 0,
+};
+function lifeHire(hire) {
+  const key = String(hire || "").toLowerCase().split(" (")[0].trim();
+  return LIFE_HIRE[key] ?? 6;
+}
+
+function lifePay(role) {
+  const nums = salaryNumbers(role.salary);
+  if (nums.length) {
+    if (Math.min(...nums) >= LIFESTYLE_FLOOR) return 10;
+    if (Math.max(...nums) >= LIFESTYLE_FLOOR) return 7;
+    return 4;
+  }
+  const cc = role.compClass;
+  if (cc === "floor_meets") return 10;
+  if (cc === "ceiling_meets") return 7;
+  if (cc === "below") return 4;
+  return 5;
+}
+
+function isIcTitle(title) {
+  const t = String(title || "");
+  return /manager|analyst|associate|specialist|\blead\b|principal|strategist|generalist/i.test(t) &&
+    !/director|head of|\bvp\b|vice president|chief|general manager|officer|founder/i.test(t);
+}
+
+function lifePath(role) {
+  const path = inferPathClass(role);
+  if (path === "wrong_direction") return 0;
+  if (path === "ceo_coo" || /\bhead of\b/i.test(role.title || "")) return 15;
+  if (isIcTitle(role.title)) return 8;
+  if (path === "cpo_cto") return 14;
+  return 11;
+}
+
+const RET_POINTS = {
+  nc: { remote_keepable: 23, coastal_hub: 14, local_only: 5 },
+  atlanta: { remote_keepable: 19, coastal_hub: 13, local_only: 5 },
+};
+const NC_TRAVEL = { remote: 10, hybrid: 8, onsite: 4 };
+const ATL_TRAVEL = { remote: 5, hybrid: 3, onsite: 1 };
+const ATL_COMMUTE = {
+  hybrid: { north_suburbs: 9, perimeter: 7, intown: 6, unknown: 6 },
+  onsite: { north_suburbs: 8, perimeter: 5, intown: 4, unknown: 4 },
+};
+const AREA_LABEL = { north_suburbs: "north suburbs (Alpharetta/Johns Creek)", perimeter: "Perimeter (Sandy Springs/Dunwoody)", intown: "intown (Midtown/Buckhead)", unknown: "office area not stated" };
+const MODE_LABEL = { remote: "Remote", hybrid: "Hybrid", onsite: "On-site" };
+
+function lifestyleScore(role, city) {
+  const access = cityAccess(role, city);
+  if (access === "none") return null;
+  const fit = Math.round((Number(role.fit) || 0) * 2.5);
+  const hire = lifeHire(role.hire);
+  const ret = returnReady(role);
+  const pay = lifePay(role);
+  const path = lifePath(role);
+  const penalty = isDisqualified(role) ? 20 : 0;
+  let parts;
+  let drive = "";
+  if (city === "atlanta") {
+    const area = atlantaArea(role);
+    const commute = access === "remote" ? 10 : ATL_COMMUTE[access][area];
+    parts = [fit, hire, RET_POINTS.atlanta[ret], commute, ATL_TRAVEL[access], pay, path];
+    drive = access === "remote" ? "Remote from Atlanta." : `${MODE_LABEL[access]} · ${AREA_LABEL[area]}`;
+  } else {
+    parts = [fit, hire, RET_POINTS.nc[ret], NC_TRAVEL[access], pay, path];
+    drive = access === "remote" ? "" : `${MODE_LABEL[access]} in ${city === "raleigh" ? "the Triangle" : "Charlotte"}`;
+  }
+  const score = Math.max(0, Math.min(100, parts.reduce((a, b) => a + b, 0) - penalty));
+  return { score, parts, penalty, access, drive };
+}
+
+// { la, raleigh, charlotte, atlanta } → { score, parts?, penalty?, access, drive? } or null.
+export function cityScores(role) {
+  const out = {};
+  const laAccess = cityAccess(role, "la");
+  out.la = laAccess === "none" ? null : { score: computePriority(role), access: laAccess };
+  for (const c of ["raleigh", "charlotte", "atlanta"]) out[c] = lifestyleScore(role, c);
+  return out;
+}
+
+const CITY_SHORT = { la: "LA", raleigh: "RDU", charlotte: "CLT", atlanta: "ATL" };
+export function cityLine(role) {
+  const cs = cityScores(role);
+  return Object.entries(CITY_SHORT).map(([k, label]) => `${label} ${cs[k] ? cs[k].score : "—"}`).join(" · ");
+}
