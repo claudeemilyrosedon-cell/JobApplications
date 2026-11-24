@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { RoleScorecard, ROLES, getEffectiveStatus } from "./App.jsx";
 import { REGIONS } from "./regions.js";
-import { computePriority, isDisqualified, companyKey } from "./scoring.js";
+import { computePriority, isDisqualified, companyKey, todayScore, inferLocationClass } from "./scoring.js";
 import { loadCustomRoles, loadStatusOverrides, loadDateAppliedOverrides } from "./storage.js";
 
 const FONT = "'Inter', system-ui, sans-serif";
@@ -36,23 +36,82 @@ function readHash() {
   return ["home", "la", "raleigh", "charlotte", "atlanta"].includes(h) ? h : "home";
 }
 
-// LA search: built-in roles + roles added on the site, with live statuses.
-function laRoles() {
+// Statuses for the NC/Atlanta city roles (they aren't in the main tracker).
+const CITY_STATUS_KEY = "role-scorecard-city-status";
+function loadCityStatus() {
+  try { return JSON.parse(localStorage.getItem(CITY_STATUS_KEY) || "{}") || {}; } catch { return {}; }
+}
+function saveCityStatus(v) {
+  try { localStorage.setItem(CITY_STATUS_KEY, JSON.stringify(v)); } catch { /* ignore */ }
+}
+
+// Every tracker role (built-in + added on the site) with its live status.
+function trackerRoles() {
   const overrides = loadStatusOverrides();
   const dates = loadDateAppliedOverrides();
-  return [...ROLES, ...loadCustomRoles()]
-    .map((r) => ({ ...r, status: getEffectiveStatus(r, overrides, dates), score: computePriority(r) }))
+  return [...ROLES, ...loadCustomRoles()].map((r) => ({ ...r, status: getEffectiveStatus(r, overrides, dates) }));
+}
+
+// LA list for the Home "best overall" view: active, scored by priority.
+function laRoles() {
+  return trackerRoles()
+    .map((r) => ({ ...r, score: computePriority(r) }))
     .filter((r) => !["rejected", "closed"].includes(r.status) && !isDisqualified(r) && !r.duplicateOf && r.score > 0)
-    .map((r) => ({
-      id: r.num, company: r.company, title: r.title, location: r.location, salary: r.salary,
-      fit: r.fit, hire: r.hire, resumeVersion: r.resumeVersion, score: r.score, status: r.status,
-      why: r.note, url: r.url, city: "la",
-    }))
+    .map(toCard)
     .sort((a, b) => b.score - a.score || (b.fit || 0) - (a.fit || 0));
 }
 
+function toCard(r) {
+  return {
+    id: r.num, company: r.company, title: r.title, location: r.location, salary: r.salary,
+    fit: r.fit, hire: r.hire, resumeVersion: r.resumeVersion, score: r.score, status: r.status,
+    why: r.note, url: r.url, city: "la", reasons: r.reasons,
+  };
+}
+
 function regionRoles(key) {
-  return REGIONS[key].roles.map((r) => ({ ...r, city: key, status: "unapplied" }));
+  const st = loadCityStatus();
+  return REGIONS[key].roles.map((r) => ({ ...r, city: key, status: st[`${key}-${r.id}`] || "unapplied" }));
+}
+
+// Companies already applied to anywhere (tracker or city tabs), so today's picks skip them.
+function appliedCompanies() {
+  const set = new Set(trackerRoles().filter((r) => r.status !== "unapplied").map((r) => companyKey(r.company)));
+  for (const k of Object.keys(REGIONS)) for (const r of regionRoles(k)) if (r.status !== "unapplied") set.add(companyKey(r.company));
+  return set;
+}
+
+// Today's picks for LA: same rules as the tracker's Today's Top 5, limited to LA-based or remote roles.
+function laToday(n) {
+  const skip = appliedCompanies();
+  const ranked = trackerRoles()
+    .filter((r) => r.status === "unapplied" && r.tier >= 1 && r.tier <= 3 && r.resumeVersion && !r.duplicateOf)
+    .filter((r) => inferLocationClass(r) !== "relocation")
+    .map((r) => ({ ...r, ...todayScore(r) }))
+    .filter((r) => !r.expired && r.base > 0)
+    .sort((a, b) => b.score - a.score || (Number(b.fit) || 0) - (Number(a.fit) || 0));
+  return pickUnique(ranked.map(toCard), n, skip);
+}
+
+// Today's picks for a city: un-applied roles, best lifestyle score first.
+function cityToday(key, n) {
+  const ranked = regionRoles(key).filter((r) => r.status === "unapplied").sort((a, b) => b.score - a.score);
+  return pickUnique(ranked, n, appliedCompanies());
+}
+
+function pickUnique(ranked, n, skip) {
+  const seen = new Map();
+  const picks = [];
+  for (const r of ranked) {
+    const k = companyKey(r.company);
+    if (skip.has(k)) continue;
+    if (seen.has(k)) { seen.get(k).also.push(r); continue; }
+    if (picks.length >= n) continue;
+    const pick = { ...r, also: [] };
+    seen.set(k, pick);
+    picks.push(pick);
+  }
+  return picks;
 }
 
 // One role per company; extra roles at the same company ride along as "also".
@@ -110,8 +169,10 @@ function Parts({ role }) {
   );
 }
 
-function RoleCard({ role, rank, showCity }) {
+function RoleCard({ role, rank, showCity, action }) {
   const [open, setOpen] = useState(rank === 1);
+  const [more, setMore] = useState(false);
+  const long = (role.why || "").length > 320;
   const c = CITY[role.city];
   return (
     <div style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: "12px 14px", marginBottom: 10, background: "white" }}>
@@ -134,43 +195,80 @@ function RoleCard({ role, rank, showCity }) {
         <div style={{ marginTop: 8, paddingLeft: 58 }}>
           <Parts role={role} />
           {role.drive && <div style={{ fontSize: 12, color: "#444", margin: "6px 0" }}><b>Commute:</b> {role.drive}</div>}
-          {role.why && <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>{role.why}</div>}
+          {role.why && (
+            <div style={{ fontSize: 13, color: "#333", lineHeight: 1.5 }}>
+              {long && !more ? `${role.why.slice(0, 320).replace(/\s+\S*$/, "")}… ` : role.why}
+              {long && <button onClick={() => setMore(!more)} style={{ border: "none", background: "none", padding: 0, fontSize: 12, fontWeight: 600, color: c.color, cursor: "pointer" }}>{more ? " Show less" : "Read more"}</button>}
+            </div>
+          )}
           {role.also?.length > 0 && (
             <div style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
               <b>Also at {role.company}:</b> {role.also.map((a) => `${a.title} (${a.score})`).join(" · ")}. Apply to one role per company.
             </div>
           )}
-          {role.url && <a href={role.url} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 10, fontSize: 12, fontWeight: 600, color: c.color }}>View posting ↗</a>}
+          {role.reasons?.length > 0 && <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>Today: {role.reasons.join(" · ")}</div>}
+          <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+            {role.url && <a href={role.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 600, color: c.color }}>View posting ↗</a>}
+            {action}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function CityView({ city, roles, onOpenAll }) {
+function CityView({ city, onOpenAll, onChange }) {
   const c = CITY[city];
-  const top = topUnique(roles, 5);
-  const shown = new Set(top.flatMap((r) => [r, ...r.also]).map((r) => r.id));
-  const rest = roles.filter((r) => !shown.has(r.id));
+  const [, bump] = useState(0);
+  const picks = city === "la" ? laToday(5) : cityToday(city, 5);
+  const appliedHere = city === "la" ? [] : regionRoles(city).filter((r) => r.status !== "unapplied");
+
+  const setCity = (role, status) => {
+    const st = loadCityStatus();
+    const key = `${city}-${role.id}`;
+    if (status === "unapplied") delete st[key]; else st[key] = status;
+    saveCityStatus(st);
+    bump((x) => x + 1);
+    onChange?.();
+  };
+
+  const btn = { fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${c.color}`, background: "white", color: c.color, cursor: "pointer" };
+
   return (
     <div>
-      <div style={{ fontSize: 20, fontWeight: 700, color: "#111" }}>Top 5 in {c.label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: "#111" }}>Top 5 to apply to today in {c.label}</div>
       <div style={{ fontSize: 13, color: "#666", margin: "4px 0 2px" }}>Target home base: {c.home}</div>
-      <div style={{ fontSize: 12, color: "#999", marginBottom: 14 }}>{c.scale}. One role per company.</div>
-      {top.map((r, i) => <RoleCard key={`${city}-${r.id}`} role={r} rank={i + 1} />)}
+      <div style={{ fontSize: 12, color: "#999", marginBottom: 14 }}>
+        {city === "la"
+          ? "Same rules as Today's Top 5 in the tracker: not yet applied, tier 1–3, LA-based or remote, newer postings and close deadlines rank higher. Skips companies you've already applied to."
+          : `${c.scale}. Not yet applied, one per company, skipping companies you've already applied to. Mark a role applied and the next one moves up.`}
+      </div>
+      {picks.length === 0 && <div style={{ fontSize: 13, color: "#666", padding: "12px 0" }}>Nothing left to apply to here. Add or rescore roles to refill this list.</div>}
+      {picks.map((r, i) => (
+        <RoleCard key={`${city}-${r.id}`} role={r} rank={i + 1}
+          action={city === "la"
+            ? <button style={btn} onClick={onOpenAll}>Update status in tracker</button>
+            : <button style={btn} onClick={() => setCity(r, "applied")}>✓ Mark applied</button>} />
+      ))}
       {city === "la" && (
         <button onClick={onOpenAll} style={{ marginTop: 6, padding: "8px 16px", borderRadius: 8, border: "1.5px solid #111", background: "#111", color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
           Open the full application tracker →
         </button>
       )}
-      {city !== "la" && rest.length > 0 && (
-        <details style={{ marginTop: 10 }}>
-          <summary style={{ fontSize: 13, fontWeight: 600, color: "#555", cursor: "pointer" }}>Other {c.label} roles scored ({rest.length})</summary>
+      {appliedHere.length > 0 && (
+        <details style={{ marginTop: 14 }}>
+          <summary style={{ fontSize: 13, fontWeight: 600, color: "#555", cursor: "pointer" }}>Applied in {c.label} ({appliedHere.length})</summary>
           <div style={{ marginTop: 8 }}>
-            {rest.map((r) => (
-              <div key={r.id} style={{ display: "flex", gap: 10, fontSize: 13, padding: "6px 0", borderBottom: "1px solid #f0f0f0" }}>
-                <span style={{ fontWeight: 700, color: c.color, minWidth: 26 }}>{r.score}</span>
-                <span><b>{r.company}</b> · {r.title} <span style={{ color: "#999" }}>· {r.location}</span></span>
+            {appliedHere.map((r) => (
+              <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, padding: "6px 0", borderBottom: "1px solid #f0f0f0" }}>
+                <span style={{ flex: 1 }}><b>{r.company}</b> · {r.title}</span>
+                <select value={r.status} onChange={(e) => setCity(r, e.target.value)} style={{ fontSize: 12 }}>
+                  <option value="applied">Applied</option>
+                  <option value="interviewing">Interviewing</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="closed">Closed</option>
+                  <option value="unapplied">Undo (not applied)</option>
+                </select>
               </div>
             ))}
           </div>
@@ -181,7 +279,7 @@ function CityView({ city, roles, onOpenAll }) {
 }
 
 function HomeView({ lists, go }) {
-  const all = ["la", "raleigh", "charlotte", "atlanta"].flatMap((k) => lists[k]);
+  const all = ["la", "raleigh", "charlotte", "atlanta"].flatMap((k) => lists[k]).filter((r) => !["rejected", "closed"].includes(r.status));
   all.sort((a, b) => b.score - a.score);
   const best = topUnique(all, 8);
   return (
@@ -232,8 +330,10 @@ export default function LocationHub() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  const refresh = () => setLists({ la: laRoles(), raleigh: regionRoles("raleigh"), charlotte: regionRoles("charlotte"), atlanta: regionRoles("atlanta") });
+
   const go = (key) => {
-    if (key === "la" || key === "home") setLists((l) => ({ ...l, la: laRoles() }));
+    refresh();
     window.location.hash = key;
     setTab(key);
     window.scrollTo(0, 0);
@@ -266,7 +366,7 @@ export default function LocationHub() {
         <HomeView lists={lists} go={go} />
       ) : (
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "1.25rem 1rem 3rem" }}>
-          <CityView city={tab} roles={lists[tab]} onOpenAll={() => go("home")} />
+          <CityView city={tab} onOpenAll={() => go("home")} onChange={refresh} />
         </div>
       )}
     </div>
